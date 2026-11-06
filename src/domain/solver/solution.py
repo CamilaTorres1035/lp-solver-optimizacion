@@ -24,6 +24,8 @@ class Solution:
     status: SolutionStatus
     values: Tuple[Tuple[str, Fraction], ...]  # (nombre_variable, valor)
     optimal_value: Optional[Fraction]
+    slacks: Tuple[Fraction, ...] # Una fracción por restricción
+    alt_values: Tuple[Tuple[str, Fraction], ...] 
     steps: Tuple[Step, ...]
     notes: Tuple[str, ...]
     message: str
