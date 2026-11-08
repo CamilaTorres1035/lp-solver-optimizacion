@@ -1,0 +1,73 @@
+# =====================================================================
+# Tema de la aplicación (oscuro, violeta + rosa)
+# =====================================================================
+# Ubicación: <raíz del proyecto>/.streamlit/config.toml
+# (la carpeta desde la que ejecutas `streamlit run`).
+#
+# Reglas de diseño usadas en esta paleta:
+#   - primaryColor lleva texto BLANCO encima (botones primarios), así que
+#     debe ser un violeta medio/oscuro. Un rosa claro como #F472B6 NO
+#     funcionaría como primario (texto blanco ilegible).
+#   - El rosa se usa como acento: enlaces y series de gráficos.
+#   - Fondo, superficies y bordes comparten el mismo tono violeta, solo
+#     cambia la luminosidad (paleta monocromática = se ve cohesiva).
+
+[theme]
+base = "dark"
+
+# --- Colores principales ----------------------------------------------
+primaryColor = "#8B5CF6"              # Botones primarios, radio, foco, sliders
+backgroundColor = "#0E0A1F"           # Fondo general de la página
+secondaryBackgroundColor = "#1A1333"  # Tarjetas, inputs, tablas, expanders
+textColor = "#EDE9FE"                 # Texto principal (lavanda muy claro)
+linkColor = "#F472B6"                 # Enlaces (acento rosa)
+borderColor = "#3B2A66"               # Bordes de widgets y contenedores
+codeBackgroundColor = "#150F2B"       # Fondo de `código` (p. ej. vista previa de restricciones)
+
+# --- Forma y tipografía -----------------------------------------------
+baseRadius = "0.6rem"                 # Esquinas redondeadas en todos los componentes
+showWidgetBorder = true               # Borde visible en inputs sin foco
+font = "sans-serif"                   # También: "serif", "monospace" o una fuente de Google Fonts
+
+# --- Colores semánticos -----------------------------------------------
+# Controlan st.info / st.success / st.warning / st.error y los chips de
+# color. Si tu versión de Streamlit no reconoce alguna clave, coméntala.
+blueColor = "#A78BFA"                 # st.info pasa de azul a violeta claro
+greenColor = "#34D399"                # st.success
+orangeColor = "#FBBF24"               # st.warning
+redColor = "#FB7185"                  # st.error (rosado-rojizo, combina con la paleta)
+
+# --- Gráficos ---------------------------------------------------------
+# Colores para st.line_chart / st.bar_chart y gráficos Plotly/Altair con
+# el tema de Streamlit. El primero se usa para la primera serie, etc.
+chartCategoricalColors = ["#A78BFA", "#F472B6", "#22D3EE", "#FBBF24", "#34D399", "#FB7185", "#818CF8"]
+
+# --- Barra lateral ----------------------------------------------------
+# Un tono un poco más oscuro que el fondo la separa visualmente del
+# contenido sin necesidad de CSS.
+[theme.sidebar]
+backgroundColor = "#140E29"
+secondaryBackgroundColor = "#1F1640"
+borderColor = "#3B2A66"
+
+# =====================================================================
+# Variantes (copia los valores sobre [theme] para probarlas)
+# =====================================================================
+# A) Más rosa (primario rosa oscuro, sigue siendo legible con texto blanco):
+#    primaryColor = "#DB2777"
+#    linkColor = "#A78BFA"
+#    chartCategoricalColors = ["#F472B6", "#A78BFA", "#22D3EE", "#FBBF24", "#34D399", "#FB7185", "#818CF8"]
+#
+# B) Neón / alto contraste:
+#    primaryColor = "#7C3AED"
+#    backgroundColor = "#07040F"
+#    secondaryBackgroundColor = "#140B2E"
+#    linkColor = "#FF4FA3"
+#    borderColor = "#4C2A99"
+#
+# C) Más suave / menos saturado:
+#    primaryColor = "#7C6BD6"
+#    backgroundColor = "#14111F"
+#    secondaryBackgroundColor = "#201B33"
+#    linkColor = "#E58BBF"
+#    borderColor = "#363052"
