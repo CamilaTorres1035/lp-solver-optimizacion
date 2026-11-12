@@ -23,6 +23,7 @@ from fractions import Fraction
 
 from domain.model.enums import OptimizationSense
 from domain.model.lp_model import build_model
+from utils.examples import get_example, list_public_examples
 
 # Helpers de formato
 # ==================
@@ -142,7 +143,8 @@ def render_model_tab() -> None:
     """
     Renderiza el formulario dinámico de definición del modelo
 
-    Orden de la pantalla: 
+    Orden de la pantalla:
+    - carga de ejemplos 
     - tamaño
     - función objetivo
     - restricciones
@@ -152,6 +154,35 @@ def render_model_tab() -> None:
 
     form = st.session_state.model_form
     version = st.session_state.form_version
+    
+    st.subheader("Cargar ejemplo")
+    
+    public_examples = list_public_examples()
+    example_keys = [""] + [ex.key for ex in public_examples]
+    
+    selected_key = st.selectbox(
+            "Selecciona un problema clásico para cargar",
+            options=example_keys,
+            format_func=lambda key: (
+                "- Selecciona un ejemplo -" if key == ""
+                else get_example(key).name
+            ),
+            key=f"example_selector_{version}",
+        )
+    
+    if selected_key:
+        example = get_example(selected_key)
+        st.info(f"**{example.name}**: {example.description}", icon=":material/info:")
+    
+    col_load, _ = st.columns([1, 3])
+    with col_load:
+        if st.button("Cargar ejemplo", disabled=not selected_key, icon=":material/content_paste_go:"):
+            _load_example(selected_key)
+            st.session_state.form_version += 1 # Fuerza regeneración de keys de widgets
+            _invalidate_results() # Invalida cualquier modelo confirmado previo
+            st.rerun()
+    
+    st.divider
 
     # Tamaño del modelo
     st.subheader("Tamaño del modelo")
@@ -471,6 +502,31 @@ def _confirm_model(form: dict) -> None:
         st.session_state.model = None
         st.error(str(error))
 
+def _load_example(key: str) -> None:
+    """
+    Carga un ejemplo precargado en el borrador del formulario
+    
+    Sobrescribe el borrador actual y fuerza una nueva versión para regenerar las keys de los widgets, asegurando que Streamlit renderice los nuevos campos correctamente
+    """
+    example = get_example(key)
+    n_variables = len(example.objective)
+    
+    constraints = []
+    for constraint in example.constraints:
+        row = {
+            f"x{index + 1}": coefficient
+            for index, coefficient in enumerate(constraint.coefficients)
+        }
+        row['rel'] = constraint.relation
+        row['rhs'] = constraint.rhs
+        constraints.append(row)
+    
+    st.session_state.model_form = {
+        "sense": example.sense,
+        "n_variables": n_variables,
+        "objective": list(example.objective),
+        "constraints": constraints
+    }
 
 def _invalidate_results() -> None:
     """
