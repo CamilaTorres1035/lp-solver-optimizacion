@@ -176,7 +176,7 @@ def render_model_tab() -> None:
     
     col_load, _ = st.columns([1, 3])
     with col_load:
-        if st.button("Cargar ejemplo", disabled=not selected_key, icon=":material/dowload:"):
+        if st.button("Cargar ejemplo", disabled=not selected_key, icon=":material/content_paste_go:"):
             _load_example(selected_key)
             st.session_state.form_version += 1 # Fuerza regeneración de keys de widgets
             _invalidate_results() # Invalida cualquier modelo confirmado previo
