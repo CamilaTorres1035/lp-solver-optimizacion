@@ -172,6 +172,19 @@ def _collect_form_shape_errors(form: Any) -> list[str]:
                 )
                 continue
 
+            for key, value in row.items():
+                if (
+                    isinstance(key, str)
+                    and key.startswith("x")
+                    and key[1:].isdigit()
+                    and int(key[1:]) > 0
+                    and not isinstance(value, str)
+                ):
+                    errors.append(
+                        f"El coeficiente de {key} en la "
+                        f"restricción {row_index} debe ser texto."
+                    )
+
             if n_variables is not None:
                 for variable_index in range(1, n_variables + 1):
                     key = f"x{variable_index}"
@@ -179,11 +192,6 @@ def _collect_form_shape_errors(form: Any) -> list[str]:
                         errors.append(
                             f"Falta el coeficiente de x{variable_index} "
                             f"en la restricción {row_index}."
-                        )
-                    elif not isinstance(row[key], str):
-                        errors.append(
-                            f"El coeficiente de x{variable_index} en la "
-                            f"restricción {row_index} debe ser texto."
                         )
 
             if "rel" not in row:
