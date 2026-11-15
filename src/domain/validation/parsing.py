@@ -1,6 +1,6 @@
 from typing import Any, Mapping, Sequence, Tuple
-from model.lp_model import OptimizationSense, LPModel, Constraint, Relation
-
+from ..model.enums import OptimizationSense, Relation
+from ..model.lp_model import Constraint, LPModel
 from fractions import Fraction
 import re
 
