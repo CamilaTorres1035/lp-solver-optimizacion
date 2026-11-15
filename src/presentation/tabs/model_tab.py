@@ -22,7 +22,8 @@ import streamlit as st
 from fractions import Fraction
 
 from domain.model.enums import OptimizationSense
-from domain.model.lp_model import build_model
+# from domain.model.lp_model import build_model <-- quitar esta línea
+from domain.validation.parsing import validate_model_form
 from utils.examples import get_example, list_public_examples
 
 # Helpers de formato
@@ -107,34 +108,20 @@ def _format_constraint(row: dict, n_variables: int) -> str:
     equation = " + ".join(terms)
     return f"{equation} {relation} {rhs}"
 
-
+# Nueva función try_build_model compatible con HU-02
 def _try_build_model(form: dict) -> tuple[bool, str, list[str]]:
-    """
-    Intenta construir el modelo y devuelve (éxito, mensaje, errores)
+    """Valida el borrador y devuelve el resultado en el formato de la interfaz."""
+    model, errors = validate_model_form(form)
 
-    Se llama en cada rerun como validación en tiempo real
-    El modelo construido aquí se descarta: el que se guarda en session_state lo crea _confirm_model() cuando el usuario pulsa el botón de confirmar
-    """
-    constraints_data = []
-    for row in form["constraints"]:
-        constraints_data.append({
-            "coefficients": [
-                row.get(f"x{i + 1}", "")
-                for i in range(form["n_variables"])
-            ],
-            "relation": row.get("rel", "<="),
-            "rhs": row.get("rhs", ""),
-        })
-    
-    try:
-        model = build_model(
-            sense=form["sense"],
-            objective=form["objective"],
-            constraints_data=constraints_data,
-        )
-        return True, "Modelo válido ✓", []
-    except Exception as e:
-        return False, "Modelo con errores ✗", [str(e)]
+    if errors:
+        return False, "Modelo con errores ✗", errors
+
+    if model is None:
+        return False, "No se pudo construir el modelo ✗", [
+            "La validación no devolvió un modelo ni errores."
+        ]
+
+    return True, "Modelo válido ✓", []
 
 # Render principal
 # ================
@@ -461,46 +448,32 @@ def _resize_model_form(new_n: int) -> None:
     form["objective"] = objective
     form["constraints"] = new_constraints
 
-
+# Nueva función confirm model compatible con HU-02
 def _confirm_model(form: dict) -> None:
-    """
-    Construye el modelo de dominio a partir del borrador y lo guarda en session_state como modelo confirmado
+    """Valida el borrador y guarda el modelo si es válido."""
+    model, errors = validate_model_form(form)
 
-    Al confirmar se descartan solución, sensibilidad y paso actual, porque pertenecían a un modelo anterior. `model_fingerprint` permite detectar más adelante si el modelo cambió respecto al que se resolvió
-    """
-    constraints_data = [
-        {
-            "coefficients": [
-                row.get(f"x{index + 1}", "")
-                for index in range(form["n_variables"])
-            ],
-            "relation": row.get("rel", "<="),
-            "rhs": row.get("rhs", ""),
-        }
-        for row in form["constraints"]
-    ]
-
-    try:
-        model = build_model(
-            sense=form["sense"],
-            objective=form["objective"],
-            constraints_data=constraints_data,
-        )
-
-        st.session_state.model = model
-        st.session_state.model_defined = True
-        st.session_state.model_fingerprint = hash(model)
-
-        st.session_state.solution = None
-        st.session_state.sensitivity = None
-        st.session_state.current_step = 0
-
-        st.success("Modelo confirmado. Puedes resolverlo en la pestaña Resolver.")
-
-    except Exception as error:
+    if errors or model is None:
         st.session_state.model_defined = False
         st.session_state.model = None
-        st.error(str(error))
+
+        if errors:
+            for error in errors:
+                st.error(error)
+        else:
+            st.error("La validación no devolvió un modelo.")
+
+        return
+
+    st.session_state.model = model
+    st.session_state.model_defined = True
+    st.session_state.model_fingerprint = hash(model)
+
+    st.session_state.solution = None
+    st.session_state.sensitivity = None
+    st.session_state.current_step = 0
+
+    st.success("Modelo confirmado. Puedes resolverlo en la pestaña Resolver.")
 
 def _load_example(key: str) -> None:
     """
