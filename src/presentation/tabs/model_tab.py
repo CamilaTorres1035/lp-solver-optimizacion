@@ -3,10 +3,10 @@ Pestaña "Definir Modelo" — HU-01.
 
 el formulario sigue este ciclo en CADA ejecución:
 
-    1. RENDER   -> se pintan los widgets con los valores guardados en st.session_state.model_form (el "borrador" del modelo)
-    2. LEER     -> se leen de vuelta los valores que el usuario escribió
-    3. COMPARAR -> si algo cambió respecto al borrador, se actualiza el borrador y se invalida el modelo confirmado
-    4. VALIDAR  -> se intenta construir el modelo con build_model(); el resultado decide si se muestra el botón de confirmar o la lista de errores
+    1. LEER     -> se sincroniza el borrador con los valores de los widgets (st.session_state)
+    2. COMPARAR -> si algo cambió, se actualiza el borrador y se invalida el modelo confirmado
+    3. PINTAR   -> se dibujan widgets y vistas previas con el borrador ya actualizado
+    4. VALIDAR  -> validate_model_form() decide si se muestra el botón de confirmar o la lista de errores
 
 - st.session_state.model_form : borrador editable. Guarda TEXTO crudo (lo que el usuario escribe, p. ej. "3/2" o "1,5"), nunca números ya convertidos.
 - st.session_state.model: modelo de dominio ya validado. Solo existe tras pulsar "Confirmar modelo". Cualquier edición posterior lo invalida (ver _invalidate_results) para que no se resuelva un modelo desactualizado
@@ -21,8 +21,6 @@ Estructura del archivo
 import streamlit as st
 from fractions import Fraction
 
-from domain.model.enums import OptimizationSense
-# from domain.model.lp_model import build_model <-- quitar esta línea
 from domain.validation.parsing import validate_model_form
 from utils.examples import get_example, list_public_examples
 
@@ -263,17 +261,19 @@ def render_model_tab() -> None:
             icon=":material/info:",
         )
     
-    # Por cada restricción: se pinta la tarjeta con los valores del borrador y luego se leen los widgets para detectar si el usuario cambió algo
+    # PASO 1 -> LEER Y COMPARAR: sincroniza el borrador con los widgets ANTES de pintar
     for idx, row in enumerate(form["constraints"]):
-        _render_constraint_card(idx, row, form["n_variables"], version)
-        
-        new_row = _read_constraint_card(idx, form["n_variables"], version)
+        new_row = _read_constraint_card(idx, form["n_variables"], version, row)
         if new_row != row:
             form["constraints"][idx] = new_row
             constraints_changed = True
 
     if constraints_changed:
         _invalidate_results()
+    
+    # PASO 2 -> PINTAR: las tarjetas se renderizan con el borrador ya sincronizado.
+    for idx, row in enumerate(form["constraints"]):
+        _render_constraint_card(idx, row, form["n_variables"], version)
 
     # Validación en tiempo real
     st.divider()
@@ -322,9 +322,8 @@ def _render_constraint_card(idx: int, row: dict, n_variables: int, version: int)
     """
     Renderiza una restricción como una tarjeta con inputs claros
 
-    Solo PINTA: los valores que escribe el usuario se recuperan después con
-    _read_constraint_card(), usando las mismas keys. Las keys siguen el
-    patrón `<prefijo>_<version>_<idx>[_<variable>]`:
+    Solo PINTA: los valores ya se leyeron y sincronizaron en el PASO 1 de render_model_tab() con _read_constraint_card(), usando estas mismas keys.
+    Las keys siguen el patrón `<prefijo>_<version>_<idx>[_<variable>]`:
         c_   -> coeficiente de una variable
         rel_ -> relación (<=, >=, =)
         rhs_ -> lado derecho
@@ -346,6 +345,7 @@ def _render_constraint_card(idx: int, row: dict, n_variables: int, version: int)
         with header_cols[2]:
             if st.button("", icon=":material/delete:", key=f"del_{version}_{idx}", help="Eliminar esta restricción", use_container_width=True):
                 st.session_state.model_form["constraints"].pop(idx)
+                st.session_state.form_version += 1
                 _invalidate_results()
                 st.rerun()
         
@@ -378,19 +378,21 @@ def _render_constraint_card(idx: int, row: dict, n_variables: int, version: int)
             )
 
 
-def _read_constraint_card(idx: int, n_variables: int, version: int) -> dict:
+def _read_constraint_card(idx: int, n_variables: int, version: int, fallback:dict) -> dict:
     """
     Lee los valores actuales de una tarjeta de restricción.
 
-    Consulta st.session_state con las mismas keys que usó _render_constraint_card(). Devuelve un dict con el mismo formato que las filas del borrador, listo para compararse con la fila original
+    Consulta st.session_state con las mismas keys que usa _render_constraint_card(). 
+    Si una key todavía no existe (primera pintura de la tarjeta, o tras un cambio de form_version), usa como respaldo el valor del borrador (`fallback`), NO un "0" fijo: así leer antes de pintar no pisa los datos recién cargados por un ejemplo, un redimensionado o una eliminación.
     """
     row = {}
     
     for i in range(n_variables):
-        row[f"x{i + 1}"] = st.session_state.get(f"c_{version}_{idx}_{i}", "0")
+        key = f"x{i + 1}"
+        row[key] = st.session_state.get(f"c_{version}_{idx}_{i}", fallback.get(key, "0"))
     
-    row["rel"] = st.session_state.get(f"rel_{version}_{idx}", "<=")
-    row["rhs"] = st.session_state.get(f"rhs_{version}_{idx}", "0")
+    row["rel"] = st.session_state.get(f"rel_{version}_{idx}", fallback.get("rel", "<="))
+    row["rhs"] = st.session_state.get(f"rhs_{version}_{idx}", fallback.get("rhs", "0"))
     
     return row
 
