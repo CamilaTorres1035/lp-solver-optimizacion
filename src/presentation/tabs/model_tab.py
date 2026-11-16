@@ -21,8 +21,6 @@ Estructura del archivo
 import streamlit as st
 from fractions import Fraction
 
-from domain.model.enums import OptimizationSense
-# from domain.model.lp_model import build_model <-- quitar esta línea
 from domain.validation.parsing import validate_model_form
 from utils.examples import get_example, list_public_examples
 
@@ -346,6 +344,7 @@ def _render_constraint_card(idx: int, row: dict, n_variables: int, version: int)
         with header_cols[2]:
             if st.button("", icon=":material/delete:", key=f"del_{version}_{idx}", help="Eliminar esta restricción", use_container_width=True):
                 st.session_state.model_form["constraints"].pop(idx)
+                st.session_state.form_version += 1
                 _invalidate_results()
                 st.rerun()
         
