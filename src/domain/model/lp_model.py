@@ -83,7 +83,7 @@ class LPModel:
         """
         return f"R{index + 1}"
 
-
+# Funciones originales, se usan en tests y examples, pero se cambia en parsing.py
 def build_model(
     sense: OptimizationSense | str,
     objective: Sequence[Any],
