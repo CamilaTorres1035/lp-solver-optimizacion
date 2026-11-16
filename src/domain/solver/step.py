@@ -17,7 +17,7 @@ class Step:
     ratios: Tuple[Optional[Fraction], ...]  # None si el coeficiente es <= 0
     pivot: Optional[PivotInfo]
     notes: Tuple[str, ...]
-    description: str
+    justification: str
     # Campos específicos para Símplex Revisado (pueden ser None en Gran M, Solo se implementan si alcanza el tiempo)
     basis_matrix: Optional[Tuple[Tuple[Fraction, ...], ...]] = None
     inverse_basis: Optional[Tuple[Tuple[Fraction, ...], ...]] = None
