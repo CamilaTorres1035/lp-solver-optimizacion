@@ -84,12 +84,12 @@ PUBLIC_EXAMPLES: Tuple[LPExample, ...] = (
         name="Problema de la dieta",
         description=(
             "Problema clásico de minimización de costos con restricciones "
-            "de igualdad y mayor o igual. Requiere variables artificiales."
+            "≤, = y ≥. Requiere variables artificiales."
         ),
         sense="min",
         objective=("0.4", "0.5"),
         constraints=(
-            ConstraintExample(("0.3", "0.1"), "=", "2.7"),
+            ConstraintExample(("0.3", "0.1"), "<=", "2.7"),  # antes "="
             ConstraintExample(("0.5", "0.5"), "=", "6"),
             ConstraintExample(("0.6", "0.4"), ">=", "6"),
         ),
@@ -107,7 +107,7 @@ PUBLIC_EXAMPLES: Tuple[LPExample, ...] = (
             ConstraintExample(("1", "0"), "<=", "4"),
             ConstraintExample(("0", "2"), "<=", "12"),
             ConstraintExample(("3", "2"), "<=", "18"),
-            ConstraintExample(("3", "5"), ">=", "500"),
+            ConstraintExample(("3", "5"), ">=", "50"),
         ),
     ),
     LPExample(
