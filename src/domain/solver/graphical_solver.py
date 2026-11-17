@@ -120,12 +120,16 @@ def _unbounded_solution(
     half_planes: Sequence[HalfPlane],
     improving_directions: Tuple[Point, ...],
 ) -> Solution:
+    directions_text = ", ".join(
+        f"{_fmt_point(d)} con ΔZ = {_fmt(_objective_change(model, d))} por unidad"
+        for d in improving_directions
+    )
     return _solution_without_values(
         model,
         status=SolutionStatus.NO_ACOTADA,
         notes=(
-            "La región es abierta y Z mejora sin límite al alejarse por ella. "
-            "Posible restricción faltante.",
+            "La región es abierta y Z mejora sin límite al alejarse por ella: "
+            f"dirección(es) {directions_text}. Posible restricción faltante.",
         ),
         message=(
             "La solución es no acotada: la función objetivo puede "

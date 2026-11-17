@@ -64,7 +64,7 @@ def build_graphical_figure(
 
     fig.update_layout(
         xaxis=dict(title="x₁", range=[xmin, xmax], zeroline=True, zerolinewidth=2),
-        yaxis=dict(title="x₂", range=[ymin, ymax], zeroline=True, zerolinewidth=2),
+        yaxis=dict(title="x₂", range=[ymin, ymax], zeroline=True, zerolinewidth=2, scaleanchor="x", scaleratio=1,),
         hovermode="closest",
         height=580,
         margin=dict(l=40, r=20, t=30, b=40),
@@ -255,3 +255,11 @@ def _twice_area(points: Sequence[Point]) -> Fraction:
         x2, y2 = points[(i + 1) % len(points)]
         total += x1 * y2 - x2 * y1
     return total
+
+def hidden_vertices_count(result: GraphicalResult) -> int:
+    """Cuántos vértices de la tabla no se dibujan por caer fuera de la ventana."""
+    xmin, xmax, ymin, ymax = result.window
+    return sum(
+        1 for v in result.vertices
+        if not (xmin <= v.point[0] <= xmax and ymin <= v.point[1] <= ymax)
+    )

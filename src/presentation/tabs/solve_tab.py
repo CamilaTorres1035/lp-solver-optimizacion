@@ -33,6 +33,7 @@ from domain.solver.step import PivotInfo, Step
 from presentation.components.plot_view import (
     build_graphical_figure,
     build_vertices_rows,
+    hidden_vertices_count,
 )
 from utils.formatting import FRACTION_MODE, format_number, subscript
 
@@ -153,6 +154,13 @@ def _render_graphical_result(
     st.plotly_chart(figure, width="stretch")
 
     st.subheader("Vértices")
+    hidden = hidden_vertices_count(graphical)
+    if hidden:
+        st.caption(
+            f"La tabla lista todas las intersecciones de rectas frontera; "
+            f"la gráfica solo dibuja las que caen en la ventana de visualización "
+            f"({hidden} quedan fuera)."
+        )
     st.dataframe(
         build_vertices_rows(graphical, number_format),
         hide_index=True,
