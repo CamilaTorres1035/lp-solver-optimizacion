@@ -3,7 +3,7 @@ from enum import Enum
 from fractions import Fraction
 from typing import Tuple, Optional, Any
 
-from src.domain.model.enums import Relation
+from ..model.enums import Relation
 from .step import Step
 
 class SolutionStatus(Enum):
