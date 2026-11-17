@@ -167,7 +167,7 @@ def render_model_tab() -> None:
             _invalidate_results() # Invalida cualquier modelo confirmado previo
             st.rerun()
     
-    st.divider
+    st.divider()
 
     # Tamaño del modelo
     st.subheader("Tamaño del modelo")
