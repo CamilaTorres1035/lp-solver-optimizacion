@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from typing import Tuple
 
 from domain.model.enums import OptimizationSense
-from domain.model.lp_model import LPModel, build_model
+from domain.model.lp_model import LPModel
+from domain.validation.parsing import validate_model_form
 
 
 @dataclass(frozen=True)
@@ -29,20 +30,33 @@ class LPExample:
     objective: Tuple[str, ...]
     constraints: Tuple[ConstraintExample, ...]
 
-    def to_model(self) -> LPModel:
-        """Construye el LPModel a partir del ejemplo."""
-        return build_model(
-            sense=self.sense,
-            objective=self.objective,
-            constraints_data=[
+    def to_form(self) -> dict:
+        """El ejemplo como borrador de formulario (mismo formato que model_tab)."""
+        return {
+            "sense": self.sense,
+            "n_variables": len(self.objective),
+            "objective": list(self.objective),
+            "constraints": [
                 {
-                    "coefficients": constraint.coefficients,
-                    "relation": constraint.relation,
+                    **{
+                        f"x{index + 1}": coefficient
+                        for index, coefficient in enumerate(constraint.coefficients)
+                    },
+                    "rel": constraint.relation,
                     "rhs": constraint.rhs,
                 }
                 for constraint in self.constraints
             ],
-        )
+        }
+
+    def to_model(self) -> LPModel:
+        """Construye el LPModel pasando por el mismo validador que la entrada manual."""
+        model, errors = validate_model_form(self.to_form())
+        if errors or model is None:
+            raise ValueError(
+                f"El ejemplo '{self.key}' no es válido: " + "; ".join(errors)
+            )
+        return model
 
 
 # EJEMPLOS PÚBLICOS (se muestran en la UI)

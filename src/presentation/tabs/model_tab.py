@@ -19,54 +19,33 @@ Estructura del archivo
 - Helpers de estado           : inicializar, redimensionar, confirmar, invalidar
 """
 import streamlit as st
-from fractions import Fraction
 
+# _to_fraction es privado en parsing.py (que no se modifica); se importa tal cual
+# para que la vista previa use el MISMO parser que la validación.
+from domain.validation.parsing import _to_fraction as parse_fraction
 from domain.validation.parsing import validate_model_form
 from utils.examples import get_example, list_public_examples
+from utils.formatting import FRACTION_MODE, format_number, subscript
 
 # Helpers de formato
 # ==================
-
-# Tabla de traducción dígito a subíndice Unicode, para nombrar x₁, x₂, ...
-SUBSCRIPTS = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
-
-
-def _subscript(n: int) -> str:
-    """Convierte un número a subíndice Unicode (x₁, x₂, x₃...)."""
-    return str(n).translate(SUBSCRIPTS)
-
 
 def _format_number_text(text: str) -> str:
     """
     Formatea un texto numérico según el formato global (Fracción/Decimal)
     Si el texto está vacío o es inválido, devuelve "?"
 
-    Acepta coma o punto decimal ("1,5" y "1.5") y fracciones ("3/2")
-    Solo afecta a la VISTA PREVIA: el valor guardado en el borrador sigue siendo el texto original del usuario
+    El texto se interpreta con el MISMO parser que valida el modelo
+    (parse_fraction), así la vista previa y la validación nunca discrepan:
+    acepta coma o punto decimal ("1,5" y "1.5") y fracciones ("3/2").
+    Solo afecta a la VISTA PREVIA: el valor guardado en el borrador sigue
+    siendo el texto original del usuario
     """
-    text_stripped = text.strip()
-    if text_stripped == "":
-        return "?"
-    
     try:
-        normalized = text_stripped.replace(",", ".")
-        value = Fraction(normalized)
-    except (ValueError, ZeroDivisionError):
+        value = parse_fraction(text)
+    except ValueError:
         return "?"
-    
-    number_format = st.session_state.get("number_format", "Fracción")
-    
-    if number_format == "Decimal":
-        # Decimal con precisión razonable, sin ceros innecesarios
-        as_float = float(value)
-        if as_float == int(as_float):
-            return str(int(as_float))
-        return f"{as_float:g}"
-    
-    # Fracción (por defecto)
-    if value.denominator == 1:
-        return str(value.numerator)
-    return f"{value.numerator}/{value.denominator}"
+    return format_number(value, st.session_state.get("number_format", FRACTION_MODE))
 
 
 def _format_objective_equation(sense: str, objective: list[str]) -> str:
@@ -78,7 +57,7 @@ def _format_objective_equation(sense: str, objective: list[str]) -> str:
     terms = []
     for i, coef in enumerate(objective):
         coef_formatted = _format_number_text(coef)
-        var_name = f"x{_subscript(i + 1)}"
+        var_name = f"x{subscript(i + 1)}"
         terms.append(f"{coef_formatted}·{var_name}")
     
     equation = " + ".join(terms)
@@ -97,7 +76,7 @@ def _format_constraint(row: dict, n_variables: int) -> str:
     terms = []
     for i in range(n_variables):
         coef = _format_number_text(row.get(f"x{i + 1}", ""))
-        var_name = f"x{_subscript(i + 1)}"
+        var_name = f"x{subscript(i + 1)}"
         terms.append(f"{coef}·{var_name}")
     
     relation = row.get("rel", "<=")
@@ -216,7 +195,7 @@ def render_model_tab() -> None:
         for index, column in enumerate(objective_columns):
             with column:
                 value = st.text_input(
-                    f"x{_subscript(index + 1)}",
+                    f"x{subscript(index + 1)}",
                     value=form["objective"][index],
                     key=f"obj_{version}_{index}",
                     placeholder="0",
@@ -355,7 +334,7 @@ def _render_constraint_card(idx: int, row: dict, n_variables: int, version: int)
         for i in range(n_variables):
             with input_cols[i]:
                 st.text_input(
-                    f"x{_subscript(i + 1)}",
+                    f"x{subscript(i + 1)}",
                     value=row.get(f"x{i + 1}", "0"),
                     key=f"c_{version}_{idx}_{i}",
                     placeholder="0",
@@ -483,25 +462,7 @@ def _load_example(key: str) -> None:
     
     Sobrescribe el borrador actual y fuerza una nueva versión para regenerar las keys de los widgets, asegurando que Streamlit renderice los nuevos campos correctamente
     """
-    example = get_example(key)
-    n_variables = len(example.objective)
-    
-    constraints = []
-    for constraint in example.constraints:
-        row = {
-            f"x{index + 1}": coefficient
-            for index, coefficient in enumerate(constraint.coefficients)
-        }
-        row['rel'] = constraint.relation
-        row['rhs'] = constraint.rhs
-        constraints.append(row)
-    
-    st.session_state.model_form = {
-        "sense": example.sense,
-        "n_variables": n_variables,
-        "objective": list(example.objective),
-        "constraints": constraints
-    }
+    st.session_state.model_form = get_example(key).to_form()
 
 def _invalidate_results() -> None:
     """
