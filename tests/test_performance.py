@@ -7,14 +7,14 @@ import unittest
 import time
 import random
 from fractions import Fraction
-from src.domain.solver.linalg import (
+from domain.solver.linalg import (
     Matrix,
     pivot_matrix,
     matrix_multiply,
     invert_matrix,
     identity_matrix,
 )
-from src.domain.solver.symbolic import ValorM
+from domain.solver.symbolic import ValorM
 
 
 def F(n, d=None) -> Fraction:

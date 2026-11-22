@@ -1,0 +1,5522 @@
+This file is a merged representation of a subset of the codebase, containing specifically included files and files not matching ignore patterns, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Only files matching these patterns are included: src/**/*.py, tests/**/*.py, README.md, requirements.txt
+- Files matching these patterns are excluded: **/__pycache__/**
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+src/
+  application/
+    use_cases/
+      __init__.py
+      solve_lp.py
+    __init__.py
+  domain/
+    model/
+      __init__.py
+      enums.py
+      lp_model.py
+    sensitivity/
+      __init__.py
+    solver/
+      __init__.py
+      graphical_solver.py
+      linalg.py
+      protocols.py
+      solution.py
+      solver_factory.py
+      step.py
+      symbolic.py
+    validation/
+      __init__.py
+      parsing.py
+    __init__.py
+  presentation/
+    components/
+      __init__.py
+      plot_view.py
+    tabs/
+      __init__.py
+      model_tab.py
+      solve_tab.py
+    __init__.py
+    app.py
+  utils/
+    __init__.py
+    examples.py
+    formatting.py
+  __init__.py
+tests/
+  application/
+    __init__.py
+    test_solve_lp.py
+  domain/
+    __init__.py
+    test_graphical_solver.py
+    test_linalg.py
+    test_lp_model.py
+    test_parsing.py
+    test_symbolic.py
+  presentation/
+    test_plot_view.py
+  utils/
+    test_examples.py
+  __init__.py
+  test_performance.py
+README.md
+requirements.txt
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="src/application/use_cases/__init__.py">
+
+</file>
+
+<file path="src/application/use_cases/solve_lp.py">
+"""
+Caso de uso: resolver un modelo con el método elegido (HU-04: gráfico).
+
+Depende del Protocol `Solver` a través de la fábrica (DIP): no conoce solvers concretos
+
+Errores que deja pasar a la capa de presentación:
+- ValueError: el método no aplica al modelo (gráfico con n ≠ 2).
+- NotImplementedError: el método aún no está implementado (Gran M, Revisado).
+"""
+from domain.model.lp_model import LPModel
+from domain.solver.solution import Solution
+from domain.solver.solver_factory import SolverFactory, SolverMethod
+
+
+def solve_lp(model: LPModel, method: SolverMethod) -> Solution:
+    solver = SolverFactory.create(method)
+    return solver.solve(model)
+</file>
+
+<file path="src/application/__init__.py">
+
+</file>
+
+<file path="src/domain/model/__init__.py">
+
+</file>
+
+<file path="src/domain/model/enums.py">
+from enum import Enum
+
+class OptimizationSense(Enum):
+    MAXIMIZE = "max"
+    MINIMIZE = "min"
+    
+class Relation(Enum):
+    LESS_EQUAL = "<="
+    GREAT_EQUAL = ">="
+    EQUAL = "="
+</file>
+
+<file path="src/domain/sensitivity/__init__.py">
+
+</file>
+
+<file path="src/domain/solver/__init__.py">
+
+</file>
+
+<file path="src/domain/solver/graphical_solver.py">
+"""
+Método gráfico para modelos de exactamente 2 variables — HU-04.
+
+Cómo se resuelve:
+  1. Se intersectan de a pares las rectas frontera (incluidos los ejes). Cada
+     intersección es una "solución en un vértice"
+  2. Cada vértice se clasifica: FEV (factible) o no factible
+  3. La solución óptima, si existe, está en un vértice FEV, así que se evalúa Z en los FEV y se escoge el mejor
+  4. Si la región es abierta se revisa si Z mejora indefinidamente al alejarse por ella (problema no acotado). Una región abierta NO implica, por sí sola, un problema no acotado
+
+Decisiones aprobadas:
+- Se muestran todos los vértices óptimos detectados
+- Si hay dos extremos óptimos, se informa el segmento con infinitos óptimos
+- El orden values/alt_values es provisional por coordenadas hasta que Gran M fije el criterio definitivo
+- Si la función objetivo es constante, se muestra nota y no se dibuja segmento
+- Si Z permanece constante a lo largo de una semirrecta de la región, se informa que hay infinitos óptimos (ej.: Max x1; x1 <= 4)
+"""
+from fractions import Fraction
+from typing import List, Optional, Sequence, Tuple
+
+from ..model.enums import OptimizationSense, Relation
+from ..model.lp_model import Constraint, LPModel
+from .solution import (
+    GraphLine,
+    GraphVertex,
+    GraphicalResult,
+    Solution,
+    SolutionStatus,
+)
+
+F = Fraction
+_ZERO = F(0)
+
+Point = Tuple[Fraction, Fraction]                          # (x1, x2) o un vector dirección
+Window = Tuple[Fraction, Fraction, Fraction, Fraction]     # (xmin, xmax, ymin, ymax)
+HalfPlane = Tuple[Fraction, Fraction, Fraction]            # (a1, a2, b)  ->  a1*x1 + a2*x2 <= b
+
+
+class GraphicalSolver:
+    """Solver gráfico: implementa el Protocol Solver."""
+
+    def solve(self, model: LPModel) -> Solution:
+        if model.n_variables != 2:
+            # La UI muestra el aviso al seleccionar el método
+            raise ValueError(
+                f"El método gráfico solo aplica con exactamente 2 variables "
+                f"(el modelo tiene {model.n_variables}). Usa Gran M."
+            )
+
+        constraints = model.constraints
+        half_planes = _constraints_as_half_planes(constraints)
+
+        # vértices (intersecciones de rectas frontera) y su clasificación
+        intersection_points = _boundary_intersections(constraints)
+        vertices = tuple(
+            GraphVertex(
+                point=p,
+                is_feasible=_satisfies_all(p, half_planes),
+                z_value=_objective_value(model, p),
+            )
+            for p in intersection_points
+        )
+        feasible_points = [v.point for v in vertices if v.is_feasible]
+
+        # Direcciones por las que la región "sigue", vacío si la región es acotada
+        open_directions = _open_region_directions(half_planes)
+
+        window = _visible_window(
+            intersection_points, region_is_open=bool(open_directions)
+        )
+        lines = _constraint_lines_for_plot(constraints, window)
+
+        # Caso 1: no existe ningún vértice FEV: región factible vacía
+        if not feasible_points:
+            return _infeasible_solution(model, vertices, lines, window)
+
+        # Caso 2: región abierta y Z mejora indefinidamente: no acotada
+        improving_directions = tuple(
+            d for d in open_directions if _improves(model, d)
+        )
+        if improving_directions:
+            return _unbounded_solution(
+                model, vertices, lines, window, half_planes, improving_directions
+            )
+
+        # Caso 3: hay óptimo, y está en un vértice FEV
+        return _optimal_solution(
+            model, vertices, feasible_points, open_directions,
+            half_planes, lines, window,
+        )
+
+# Construcción de las tres respuestas posibles
+
+def _infeasible_solution(
+    model: LPModel,
+    vertices: Tuple[GraphVertex, ...],
+    lines: Tuple[GraphLine, ...],
+    window: Window,
+) -> Solution:
+    return _solution_without_values(
+        model,
+        status=SolutionStatus.NO_FACTIBLE,
+        notes=(
+            "Ningún punto satisface todas las restricciones a la vez: "
+            "la región factible es vacía.",
+        ),
+        message=(
+            "El modelo no tiene solución factible. "
+            "Revisa restricciones que se contradicen entre sí."
+        ),
+        graphical=_graphical_result(vertices, lines, window),
+    )
+
+
+def _unbounded_solution(
+    model: LPModel,
+    vertices: Tuple[GraphVertex, ...],
+    lines: Tuple[GraphLine, ...],
+    window: Window,
+    half_planes: Sequence[HalfPlane],
+    improving_directions: Tuple[Point, ...],
+) -> Solution:
+    directions_text = ", ".join(
+        f"{_fmt_point(d)} con ΔZ = {_fmt(_objective_change(model, d))} por unidad"
+        for d in improving_directions
+    )
+    return _solution_without_values(
+        model,
+        status=SolutionStatus.NO_ACOTADA,
+        notes=(
+            "La región es abierta y Z mejora sin límite al alejarse por ella: "
+            f"dirección(es) {directions_text}. Posible restricción faltante.",
+        ),
+        message=(
+            "La solución es no acotada: la función objetivo puede "
+            "mejorar indefinidamente. Revisa la formulación."
+        ),
+        graphical=_graphical_result(
+            vertices, lines, window,
+            polygon=_feasible_region_polygon(half_planes, window),
+            region_is_unbounded=True,
+            improving_directions=improving_directions,
+        ),
+    )
+
+
+def _optimal_solution(
+    model: LPModel,
+    vertices: Tuple[GraphVertex, ...],
+    feasible_points: List[Point],
+    open_directions: Tuple[Point, ...],
+    half_planes: Sequence[HalfPlane],
+    lines: Tuple[GraphLine, ...],
+    window: Window,
+) -> Solution:
+    pick_best = max if model.sense == OptimizationSense.MAXIMIZE else min
+    best_z = pick_best(_objective_value(model, p) for p in feasible_points)
+
+    optimal_points = sorted(
+        p for p in feasible_points if _objective_value(model, p) == best_z
+    )
+    main_point = optimal_points[0]
+
+    c1, c2 = model.objective
+    objective_is_constant = c1 == 0 and c2 == 0
+
+    notes: List[str] = []
+    has_constant_z_ray = False  # ¿Z se queda igual a lo largo de una semirrecta?
+    alt_values: Tuple[Tuple[str, Fraction], ...] = ()
+    optimal_segment: Optional[Tuple[Point, Point]] = None
+
+    if objective_is_constant:
+        notes.append(
+            "La función objetivo es constante (Z = 0): cualquier punto "
+            "factible es óptimo. Se reporta el primer vértice por orden."
+        )
+    else:
+        # Óptimos múltiples entre vértices: la recta de isoutilidad coincide con una arista de la región (ej.: Max 3x1+2x2 en Wyndor -> Z = 18)
+        if len(optimal_points) >= 2:
+            first, last = optimal_points[0], optimal_points[-1]
+            optimal_segment = (first, last)
+            alt_values = (("x1", last[0]), ("x2", last[1]))
+            notes.append(
+                f"Óptimos múltiples: Z = {_fmt(best_z)} en todo el segmento entre "
+                f"{_fmt_point(first)} y {_fmt_point(last)}. "
+                f"Hay infinitos puntos óptimos: x = λA + (1−λ)B, 0 ≤ λ ≤ 1."
+            )
+
+        # Óptimos sobre una semirrecta: la región es abierta y hay una dirección en la que Z no cambia (ej.: Max x1; x1 <= 4 -> (4, x2), x2 >= 0).
+        has_constant_z_ray = any(
+            _objective_change(model, d) == 0 for d in open_directions
+        )
+        if has_constant_z_ray:
+            notes.append(
+                "Hay infinitos óptimos: desde el vértice óptimo, Z permanece "
+                "constante a lo largo de una semirrecta de la región."
+            )
+
+    if open_directions and not has_constant_z_ray:
+        notes.append(
+            "La región es abierta, pero Z no mejora en ninguna dirección "
+            "infinita: el óptimo existe y está en un vértice."
+        )
+
+    notes.append("Resuelto con el método gráfico.")
+
+    isoprofit_segment = (
+        None
+        if objective_is_constant
+        else _line_segment_in_window(c1, c2, best_z, window)
+    )
+
+    return Solution(
+        status=SolutionStatus.OPTIMA,
+        values=(("x1", main_point[0]), ("x2", main_point[1])),
+        optimal_value=best_z,
+        slacks=_slack_values(model, main_point),
+        alt_values=alt_values,
+        steps=(),
+        notes=tuple(notes),
+        message=(
+            f"Óptimo encontrado en {_fmt_point(main_point)} "
+            f"con Z = {_fmt(best_z)}."
+        ),
+        basis_info=None,
+        model_fingerprint=hash(model),
+        graphical=_graphical_result(
+            vertices, lines, window,
+            polygon=_feasible_region_polygon(half_planes, window),
+            optimal_vertices=tuple(optimal_points),
+            optimal_segment=optimal_segment,
+            isoprofit_z=best_z,
+            isoprofit_segment=isoprofit_segment,
+            region_is_unbounded=bool(open_directions),
+        ),
+    )
+
+
+def _solution_without_values(
+    model: LPModel,
+    status: SolutionStatus,
+    notes: Tuple[str, ...],
+    message: str,
+    graphical: GraphicalResult,
+) -> Solution:
+    """Solution para los casos sin óptimo (no factible / no acotada)."""
+    return Solution(
+        status=status,
+        values=(),
+        optimal_value=None,
+        slacks=(),
+        alt_values=(),
+        steps=(),
+        notes=notes,
+        message=message,
+        basis_info=None,
+        model_fingerprint=hash(model),
+        graphical=graphical,
+    )
+
+
+def _graphical_result(
+    vertices: Tuple[GraphVertex, ...],
+    lines: Tuple[GraphLine, ...],
+    window: Window,
+    *,
+    polygon: Tuple[Point, ...] = (),
+    optimal_vertices: Tuple[Point, ...] = (),
+    optimal_segment: Optional[Tuple[Point, Point]] = None,
+    isoprofit_z: Optional[Fraction] = None,
+    isoprofit_segment: Optional[Tuple[Point, Point]] = None,
+    region_is_unbounded: bool = False,
+    improving_directions: Tuple[Point, ...] = (),
+) -> GraphicalResult:
+    """Todo lo que necesita la UI para dibujar; los valores por defecto son 'nada que dibujar'."""
+    return GraphicalResult(
+        vertices=vertices,
+        region_polygon=polygon,
+        lines=lines,
+        window=window,
+        optimal_vertices=optimal_vertices,
+        optimal_segment=optimal_segment,
+        isoprofit_z=isoprofit_z,
+        isoprofit_segment=isoprofit_segment,
+        region_is_unbounded=region_is_unbounded,
+        improving_directions=improving_directions,
+    )
+
+
+# Geometría: semiplanos, vértices y factibilidad
+
+def _constraints_as_half_planes(
+    constraints: Sequence[Constraint],
+) -> Tuple[HalfPlane, ...]:
+    """
+    Convierte TODO a la forma a1*x1 + a2*x2 <= b, incluida la no negatividad.
+      >=  se multiplica por -1
+      =   se parte en dos desigualdades (<= y >=)
+    Así factibilidad, direcciones y recorte del polígono usan una sola regla.
+    """
+    rows: List[HalfPlane] = [
+        (F(-1), F(0), F(0)),  # x1 >= 0   ->  -x1 <= 0
+        (F(0), F(-1), F(0)),  # x2 >= 0   ->  -x2 <= 0
+    ]
+    for c in constraints:
+        a1, a2 = c.coefficients
+        if c.relation == Relation.LESS_EQUAL:
+            rows.append((a1, a2, c.rhs))
+        elif c.relation == Relation.GREAT_EQUAL:
+            rows.append((-a1, -a2, -c.rhs))
+        else:  # igualdad
+            rows.append((a1, a2, c.rhs))
+            rows.append((-a1, -a2, -c.rhs))
+    return tuple(rows)
+
+
+def _boundary_intersections(constraints: Sequence[Constraint]) -> Tuple[Point, ...]:
+    """
+    Puntos donde se cortan, de a pares, las rectas frontera (a1*x1 + a2*x2 = b), incluidos los ejes x1 = 0 y x2 = 0. Las rectas paralelas no se cortan (determinante exactamente 0) y los puntos repetidos se descartan
+    """
+    boundary_lines: List[HalfPlane] = [
+        (F(1), F(0), F(0)),  # eje x1 = 0
+        (F(0), F(1), F(0)),  # eje x2 = 0
+    ]
+    for c in constraints:
+        a1, a2 = c.coefficients
+        if a1 != 0 or a2 != 0:  # una restricción 0*x <= b no dibuja ninguna recta
+            boundary_lines.append((a1, a2, c.rhs))
+
+    points = set()
+    for i in range(len(boundary_lines)):
+        for j in range(i + 1, len(boundary_lines)):
+            a1, a2, b1 = boundary_lines[i]
+            c1, c2, b2 = boundary_lines[j]
+
+            determinant = a1 * c2 - a2 * c1
+            if determinant == 0:
+                continue  # paralelas
+
+            # Regla de Cramer para el sistema 2x2.
+            points.add((
+                (b1 * c2 - a2 * b2) / determinant,
+                (a1 * b2 - b1 * c1) / determinant,
+            ))
+
+    return tuple(sorted(points))
+
+
+def _satisfies_all(point: Point, half_planes: Sequence[HalfPlane]) -> bool:
+    """¿El punto cumple todas las restricciones y x >= 0? (es decir, ¿es FEV?)"""
+    return all(a1 * point[0] + a2 * point[1] <= b for a1, a2, b in half_planes)
+
+
+def _objective_value(model: LPModel, point: Point) -> Fraction:
+    return model.objective[0] * point[0] + model.objective[1] * point[1]
+
+
+# Regiones abiertas: ¿Z mejora indefinidamente?
+
+def _open_region_directions(half_planes: Sequence[HalfPlane]) -> Tuple[Point, ...]:
+    """
+    Direcciones en las que se puede avanzar sin salir de la región (si no devuelve ninguna, la región es acotada)
+
+    Una dirección d es válida si, para cada semiplano, a*d <= 0 (avanzar no acerca a ninguna frontera). En 2D los rayos extremos de la región solo pueden ser paralelos a alguna recta frontera, así que basta probar esas direcciones; las combinaciones entre ellas no aportan nada nuevo. Los ejes ya están entre los semiplanos, por eso no se agregan aparte.
+    """
+    candidates: List[Point] = []
+    for a1, a2, _ in half_planes:
+        candidates.append((a2, -a1))
+        candidates.append((-a2, a1))
+
+    valid = set()
+    for d1, d2 in candidates:
+        if d1 == 0 and d2 == 0:
+            continue  # semiplano 0*x <= b: no define dirección
+        if all(a1 * d1 + a2 * d2 <= 0 for a1, a2, _ in half_planes):
+            scale = max(abs(d1), abs(d2))
+            valid.add((d1 / scale, d2 / scale))  # normaliza para no repetir
+
+    return tuple(sorted(valid))
+
+
+def _objective_change(model: LPModel, direction: Point) -> Fraction:
+    """Cuánto cambia Z por cada unidad que se avanza en esa dirección."""
+    return model.objective[0] * direction[0] + model.objective[1] * direction[1]
+
+
+def _improves(model: LPModel, direction: Point) -> bool:
+    """¿Avanzar en esa dirección mejora Z? (sube en Max, baja en Min)"""
+    change = _objective_change(model, direction)
+    return change > 0 if model.sense == OptimizationSense.MAXIMIZE else change < 0
+
+
+# Dibujo: ventana, región factible y rectas
+
+def _visible_window(points: Sequence[Point], region_is_open: bool) -> Window:
+    """
+    Ventana de dibujo: el origen y los vértices del primer cuadrante (factibles o no) más un margen del 20 %. Se ignoran los puntos con coordenadas negativas porque x >= 0
+
+    Si la región es abierta se amplía al doble del vértice más lejano, para que en pantalla se vea que la región continúa y no termina en el último vértice.
+    """
+    in_first_quadrant = [p for p in points if p[0] >= 0 and p[1] >= 0]
+    xs = [_ZERO] + [p[0] for p in in_first_quadrant]
+    ys = [_ZERO] + [p[1] for p in in_first_quadrant]
+
+    x_max, y_max = max(xs), max(ys)
+    if region_is_open:
+        reach = 2 * max(x_max, y_max, F(1))
+        x_max = y_max = reach
+
+    x_margin = x_max / 5 or F(1)
+    y_margin = y_max / 5 or F(1)
+
+    # El margen negativo deja ver los ejes
+    return -x_margin, x_max + x_margin, -y_margin, y_max + y_margin
+
+
+def _feasible_region_polygon(
+    half_planes: Sequence[HalfPlane],
+    window: Window,
+) -> Tuple[Point, ...]:
+    """
+    Región factible como polígono: se parte del rectángulo de la ventana y se recorta con cada semiplano. Con una igualdad el resultado es un segmento (polígono degenerado); la UI debe dibujarlo como línea, no como relleno.
+    """
+    xmin, xmax, ymin, ymax = window
+    polygon: Tuple[Point, ...] = (
+        (xmin, ymin), (xmax, ymin), (xmax, ymax), (xmin, ymax),
+    )
+    for a1, a2, b in half_planes:
+        polygon = _clip_polygon(polygon, a1, a2, b)
+        if not polygon:
+            break
+    return polygon
+
+
+def _clip_polygon(
+    polygon: Tuple[Point, ...],
+    a1: Fraction,
+    a2: Fraction,
+    b: Fraction,
+) -> Tuple[Point, ...]:
+    """Recorta el polígono con a1*x + a2*y <= b (Sutherland–Hodgman, exacto)"""
+    if not polygon:
+        return ()
+
+    clipped: List[Point] = []
+    n = len(polygon)
+
+    for i in range(n):
+        current = polygon[i]
+        following = polygon[(i + 1) % n]
+
+        # Valor <= 0 significa "dentro del semiplano".
+        d_current = a1 * current[0] + a2 * current[1] - b
+        d_following = a1 * following[0] + a2 * following[1] - b
+        current_inside = d_current <= 0
+        following_inside = d_following <= 0
+
+        if current_inside:
+            clipped.append(current)
+
+        # La arista cruza la frontera: se agrega el punto de corte.
+        if current_inside != following_inside:
+            t = d_current / (d_current - d_following)
+            clipped.append((
+                current[0] + t * (following[0] - current[0]),
+                current[1] + t * (following[1] - current[1]),
+            ))
+
+    # Quita puntos consecutivos repetidos.
+    unique: List[Point] = []
+    for p in clipped:
+        if not unique or p != unique[-1]:
+            unique.append(p)
+    if len(unique) > 1 and unique[0] == unique[-1]:
+        unique.pop()
+
+    return tuple(unique)
+
+
+def _line_segment_in_window(
+    a1: Fraction,
+    a2: Fraction,
+    b: Fraction,
+    window: Window,
+) -> Optional[Tuple[Point, Point]]:
+    """Tramo visible de la recta a1*x + a2*y = b: sus cortes con el borde de la ventana."""
+    if a1 == 0 and a2 == 0:
+        return None
+
+    xmin, xmax, ymin, ymax = window
+    hits = set()
+
+    if a2 != 0:
+        for x in (xmin, xmax):  # bordes izquierdo y derecho
+            y = (b - a1 * x) / a2
+            if ymin <= y <= ymax:
+                hits.add((x, y))
+
+    if a1 != 0:
+        for y in (ymin, ymax):  # bordes inferior y superior
+            x = (b - a2 * y) / a1
+            if xmin <= x <= xmax:
+                hits.add((x, y))
+
+    ordered = sorted(hits)
+    if len(ordered) < 2:
+        return None  # la recta no cruza la ventana
+    return ordered[0], ordered[-1]
+
+
+def _constraint_lines_for_plot(
+    constraints: Sequence[Constraint],
+    window: Window,
+) -> Tuple[GraphLine, ...]:
+    lines: List[GraphLine] = []
+
+    for c in constraints:
+        a1, a2 = c.coefficients
+        if a1 == 0 and a2 == 0:
+            continue  # no es una recta
+
+        segment = _line_segment_in_window(a1, a2, c.rhs, window)
+        lines.append(GraphLine(
+            label=f"R{c.original_index}",
+            coefficients=(a1, a2),
+            relation=c.relation,
+            rhs=c.rhs,
+            p1=segment[0] if segment else None,
+            p2=segment[1] if segment else None,
+        ))
+
+    return tuple(lines)
+
+
+# Holguras y formato
+
+def _slack_values(model: LPModel, point: Point) -> Tuple[Fraction, ...]:
+    """Holgura (<=) o exceso (>=) de cada restricción original en ese punto; 0 en igualdades."""
+    result: List[Fraction] = []
+
+    for c in model.constraints:
+        lhs = c.coefficients[0] * point[0] + c.coefficients[1] * point[1]
+
+        if c.relation == Relation.LESS_EQUAL:
+            result.append(c.rhs - lhs)
+        elif c.relation == Relation.GREAT_EQUAL:
+            result.append(lhs - c.rhs)
+        else:
+            result.append(_ZERO)
+
+    return tuple(result)
+
+
+# Formato mínimo local
+
+def _fmt(value: Fraction) -> str:
+    if value.denominator == 1:
+        return str(value.numerator)
+    return f"{value.numerator}/{value.denominator}"
+
+
+def _fmt_point(p: Point) -> str:
+    return f"({_fmt(p[0])}, {_fmt(p[1])})"
+</file>
+
+<file path="src/domain/solver/linalg.py">
+"""
+Operaciones matriciales con aritmética exacta de fracciones.
+No se usa NumPy para preservar la exactitud.
+"""
+from fractions import Fraction
+from typing import Tuple
+
+# Tipo Matrix: tupla de tuplas de Fraction (inmutable)
+Matrix = Tuple[Tuple[Fraction, ...], ...]
+Vector = Tuple[Fraction, ...]
+
+
+def identity_matrix(n: int) -> Matrix:
+    """Crea una matriz identidad n×n."""
+    return tuple(
+        tuple(Fraction(1) if i == j else Fraction(0) for j in range(n))
+        for i in range(n)
+    )
+
+
+def matrix_multiply(a: Matrix, b: Matrix) -> Matrix:
+    """
+    Producto de matrices A × B.
+    A debe ser m×n y B debe ser n×p.
+    """
+    m = len(a)
+    n = len(a[0])
+    p = len(b[0])
+    
+    if len(b) != n:
+        raise ValueError(f"Dimensiones incompatibles: A es {m}×{n}, B es {len(b)}×{p}")
+    
+    return tuple(
+        tuple(
+            sum(a[i][k] * b[k][j] for k in range(n))
+            for j in range(p)
+        )
+        for i in range(m)
+    )  # type: ignore
+
+
+def matrix_vector_multiply(a: Matrix, v: Vector) -> Vector:
+    """
+    Producto matriz A × vector v.
+    A debe ser m×n y v debe tener longitud n.
+    """
+    n = len(a[0])
+    
+    if len(v) != n:
+        raise ValueError(f"Dimensiones incompatibles: A tiene {n} columnas, vector tiene longitud {len(v)}")
+    
+    return tuple(
+        sum(a[i][k] * v[k] for k in range(n))
+        for i in range(len(a))
+    )  # type: ignore
+
+
+def pivot_matrix(matrix: Matrix, pivot_row: int, pivot_col: int) -> Matrix:
+    """
+    Operación de pivoteo elemental (Gauss-Jordan para una columna).
+    Hace que el elemento pivote sea 1 y el resto de la columna sea 0.
+    
+    Optimización: calcula la fila pivote normalizada UNA sola vez.
+    """
+    m = len(matrix)
+    n = len(matrix[0])
+    pivot_element = matrix[pivot_row][pivot_col]
+    
+    if pivot_element == 0:
+        raise ValueError("El elemento pivote no puede ser cero")
+    
+    # calcular la fila pivote normalizada una sola vez
+    normalized_pivot_row = tuple(matrix[pivot_row][j] / pivot_element for j in range(n))
+    
+    result = []
+    for i in range(m):
+        if i == pivot_row:
+            result.append(normalized_pivot_row)
+        else:
+            factor = matrix[i][pivot_col]
+            new_row = tuple(
+                matrix[i][j] - factor * normalized_pivot_row[j]
+                for j in range(n)
+            )
+            result.append(new_row)
+    
+    return tuple(result)
+
+
+def invert_matrix(matrix: Matrix) -> Matrix:
+    """
+    Invierte una matriz cuadrada usando Gauss-Jordan.
+    Lanza ValueError si la matriz es singular.
+    
+    Útil para:
+    - Pruebas de paridad (verificar B·B⁻¹ = I en HU-07)
+    - Verificación cruzada entre Gran M y Revisado
+    """
+    n = len(matrix)
+    if any(len(row) != n for row in matrix):
+        raise ValueError("La matriz debe ser cuadrada")
+    
+    # Crear matriz aumentada [A | I]
+    augmented: list[list[Fraction]] = [
+        list(matrix[i]) + [Fraction(1) if i == j else Fraction(0) for j in range(n)]
+        for i in range(n)
+    ]
+    
+    # Eliminación Gauss-Jordan
+    for col in range(n):
+        # Buscar pivote (fila con valor distinto de cero)
+        pivot_row = None
+        for row in range(col, n):
+            if augmented[row][col] != 0:
+                pivot_row = row
+                break
+        
+        if pivot_row is None:
+            raise ValueError("La matriz es singular (no invertible)")
+        
+        # Intercambiar filas si es necesario
+        if pivot_row != col:
+            augmented[col], augmented[pivot_row] = augmented[pivot_row], augmented[col]
+        
+        # Normalizar fila pivote
+        pivot_element = augmented[col][col]
+        augmented[col] = [x / pivot_element for x in augmented[col]]
+        
+        # Eliminar el resto de la columna
+        for row in range(n):
+            if row != col:
+                factor = augmented[row][col]
+                augmented[row] = [
+                    augmented[row][j] - factor * augmented[col][j]
+                    for j in range(2 * n)
+                ]
+    
+    # Extraer la matriz inversa (lado derecho)
+    return tuple(
+        tuple(Fraction(row[j]) for j in range(n, 2 * n))
+        for row in augmented
+    )
+
+
+def transpose(matrix: Matrix) -> Matrix:
+    """Transpone una matriz."""
+    if not matrix:
+        return tuple()
+    m = len(matrix)
+    n = len(matrix[0])
+    return tuple(
+        tuple(matrix[i][j] for i in range(m))
+        for j in range(n)
+    )
+
+
+def get_column(matrix: Matrix, col: int) -> Vector:
+    """Extrae una columna de la matriz como vector."""
+    return tuple(matrix[i][col] for i in range(len(matrix)))
+
+
+def get_row(matrix: Matrix, row: int) -> Vector:
+    """Extrae una fila de la matriz como vector."""
+    return matrix[row]
+</file>
+
+<file path="src/domain/solver/symbolic.py">
+"""
+Valor simbólico a + bM para el método de la Gran M.
+
+M se trata como un número infinitamente grande, por lo que el orden
+de comparación es: primero el coeficiente de M (b), luego la parte
+numérica (a). Esto garantiza que las penalizaciones artificiales
+siempre dominen sobre los valores numéricos.
+
+Ejemplos de formato:
+    ValorM(3, 2)   → "2M + 3"
+    ValorM(2, -11/10) → "-11/10 M + 2/5"  (si constant=2/5, m_coeff=-11/10)
+    ValorM(0, -1)  → "-M"
+    ValorM(5, 0)   → "5"
+    ValorM(0, 0)   → "0"
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from fractions import Fraction
+from typing import Union
+
+
+# Tipos con los que ValorM puede operar directamente
+ScalarLike = Union[int, Fraction, "ValorM"]
+
+
+@dataclass(frozen=True)
+class ValorM:
+    """Representa el valor simbólico `constant + m_coeff * M`."""
+
+    constant: Fraction
+    m_coeff: Fraction
+
+    #  Construcción flexible
+    def __init__(self, constant: ScalarLike = 0, m_coeff: ScalarLike = 0) -> None:
+        # object.__setattr__ porque la dataclass es frozen
+        object.__setattr__(self, "constant", _to_fraction(constant))
+        object.__setattr__(self, "m_coeff", _to_fraction(m_coeff))
+
+    #  Predicados
+    @property
+    def is_pure_number(self) -> bool:
+        """True si no tiene componente de M (se comporta como Fraction)."""
+        return self.m_coeff == 0
+
+    @property
+    def is_zero(self) -> bool:
+        return self.constant == 0 and self.m_coeff == 0
+
+    def to_fraction(self) -> Fraction:
+        """Convierte a Fraction. Solo válido si is_pure_number."""
+        if not self.is_pure_number:
+            raise ValueError(
+                f"No se puede convertir {self} a Fraction: tiene componente M"
+            )
+        return self.constant
+
+    #  Operaciones aritméticas
+    def __neg__(self) -> ValorM:
+        return ValorM(-self.constant, -self.m_coeff)
+
+    def __pos__(self) -> ValorM:
+        return self
+
+    def __add__(self, other: ScalarLike) -> ValorM:
+        other = _coerce(other)
+        return ValorM(
+            self.constant + other.constant,
+            self.m_coeff + other.m_coeff,
+        )
+
+    def __radd__(self, other: ScalarLike) -> ValorM:
+        return self.__add__(other)
+
+    def __sub__(self, other: ScalarLike) -> ValorM:
+        other = _coerce(other)
+        return ValorM(
+            self.constant - other.constant,
+            self.m_coeff - other.m_coeff,
+        )
+
+    def __rsub__(self, other: ScalarLike) -> ValorM:
+        return (-self).__add__(other)
+
+    def __mul__(self, other: ScalarLike) -> ValorM:
+        other = _coerce(other)
+        if not other.is_pure_number and not self.is_pure_number:
+            raise ValueError(
+                f"No se puede multiplicar {self} * {other}: "
+                "ambos tienen componente M (M² no está soportado)"
+            )
+        # (a + bM) * c = a*c + b*c*M
+        if other.is_pure_number:
+            c = other.constant
+            return ValorM(self.constant * c, self.m_coeff * c)
+        # self es número puro, other tiene M
+        a = self.constant
+        return ValorM(a * other.constant, a * other.m_coeff)
+
+    def __rmul__(self, other: ScalarLike) -> ValorM:
+        return self.__mul__(other)
+
+    def __truediv__(self, other: ScalarLike) -> ValorM:
+        other = _coerce(other)
+        if not other.is_pure_number:
+            raise ValueError(
+                f"No se puede dividir {self} / {other}: "
+                "el divisor no puede tener componente M"
+            )
+        if other.constant == 0:
+            raise ZeroDivisionError("División por cero")
+        c = other.constant
+        return ValorM(self.constant / c, self.m_coeff / c)
+
+    def __rtruediv__(self, other: ScalarLike) -> ValorM:
+        # other / self: solo válido si self es número puro
+        if not self.is_pure_number:
+            raise ValueError(
+                f"No se puede dividir {other} / {self}: "
+                "el divisor tiene componente M"
+            )
+        if self.constant == 0:
+            raise ZeroDivisionError("División por cero")
+        other = _coerce(other)
+        if not other.is_pure_number:
+            raise ValueError(
+                f"No se puede dividir {other} / {self}: "
+                "el numerador tiene componente M"
+            )
+        return ValorM(other.constant / self.constant, Fraction(0))
+
+    #  Comparaciones (M primero, luego parte numérica)
+    def _cmp_key(self) -> tuple[Fraction, Fraction]:
+        return (self.m_coeff, self.constant)
+
+    def __lt__(self, other: ScalarLike) -> bool:
+        return self._cmp_key() < _coerce(other)._cmp_key()
+
+    def __le__(self, other: ScalarLike) -> bool:
+        return self._cmp_key() <= _coerce(other)._cmp_key()
+
+    def __gt__(self, other: ScalarLike) -> bool:
+        return self._cmp_key() > _coerce(other)._cmp_key()
+
+    def __ge__(self, other: ScalarLike) -> bool:
+        return self._cmp_key() >= _coerce(other)._cmp_key()
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, (int, Fraction)):
+            other = _coerce(other)
+        if not isinstance(other, ValorM):
+            return NotImplemented
+        return (self.constant, self.m_coeff) == (other.constant, other.m_coeff)
+
+    def __ne__(self, other: object) -> bool:
+        eq = self.__eq__(other)
+        return eq if eq is NotImplemented else not eq
+
+    def __hash__(self) -> int:
+        return hash((self.constant, self.m_coeff))
+
+    #  Formato (M siempre primero)
+    def __str__(self) -> str:
+        a, b = self.constant, self.m_coeff
+
+        # Caso 1: cero total
+        if a == 0 and b == 0:
+            return "0"
+
+        # Caso 2: solo parte numérica
+        if b == 0:
+            return _format_fraction(a)
+
+        # Caso 3: solo parte de M
+        if a == 0:
+            return _format_m_term(b)
+
+        # Caso 4: ambos componentes → "{parte_M} ± {parte_numérica}"
+        m_part = _format_m_term(b)
+        if a > 0:
+            return f"{m_part} + {_format_fraction(a)}"
+        # a < 0: mostrar como resta
+        return f"{m_part} - {_format_fraction(-a)}"
+
+    def __repr__(self) -> str:
+        return f"ValorM(constant={self.constant!r}, m_coeff={self.m_coeff!r})"
+
+
+# ====================================================================== #
+#  Helpers privados
+# ====================================================================== #
+
+def _to_fraction(value: ScalarLike) -> Fraction:
+    """Convierte int, Fraction o ValorM (si es número puro) a Fraction."""
+    if isinstance(value, Fraction):
+        return value
+    if isinstance(value, int):
+        return Fraction(value)
+    if isinstance(value, ValorM):
+        if not value.is_pure_number:
+            raise ValueError(
+                f"No se puede usar {value} como escalar: tiene componente M"
+            )
+        return value.constant
+    raise TypeError(f"Tipo no soportado: {type(value).__name__}")
+
+
+def _coerce(value: ScalarLike) -> ValorM:
+    """Convierte int/Fraction a ValorM con m_coeff=0."""
+    if isinstance(value, ValorM):
+        return value
+    return ValorM(_to_fraction(value), Fraction(0))
+
+
+def _format_fraction(f: Fraction) -> str:
+    """Formatea una fracción: '3', '-3/2', '2/5'."""
+    if f.denominator == 1:
+        return str(f.numerator)
+    return f"{f.numerator}/{f.denominator}"
+
+
+def _format_m_term(b: Fraction) -> str:
+    """Formatea el término bM: 'M', '-M', '2M', '-11/10 M'."""
+    if b == 1:
+        return "M"
+    if b == -1:
+        return "-M"
+    if b.denominator == 1:
+        return f"{b.numerator}M"
+    # Fracción no trivial: "-11/10 M"
+    return f"{b.numerator}/{b.denominator} M"
+</file>
+
+<file path="src/domain/validation/__init__.py">
+
+</file>
+
+<file path="src/domain/validation/parsing.py">
+from typing import Any, Mapping, Sequence, Tuple
+from ..model.enums import OptimizationSense, Relation
+from ..model.lp_model import Constraint, LPModel
+from fractions import Fraction
+import re
+
+# Formato esperado de un entero
+_INTEGER = r"[+-]?\d+"
+# Formato esperado de un decimal
+_DECIMAL = r"[+-]?\d+[.,]\d+"
+
+# Patrón de número para comparar textos
+_NUMBER_RE = re.compile(rf"(?:{_INTEGER}|{_DECIMAL})")
+
+# Patrón de fracción
+_FRACTION_RE = re.compile(rf"({_INTEGER})\s*/\s*({_INTEGER})")
+
+# Límites de dimensión
+MAX_VARIABLES = 20
+MAX_CONSTRAINTS = 20
+
+def _to_fraction(value: str) -> Fraction:
+    """
+        Parser, recibe el texto de una celda y devuelve un Fraction.
+        Reconoce enteros, decimales con punto o coma y fracciones, y devuelve Fraction.
+    """
+    raw = str(value)
+    text = raw.strip()
+
+    if not text:
+        raise ValueError("Celda vacía: se esperaba un número.")
+
+    fraction_match = _FRACTION_RE.fullmatch(text)
+
+    if fraction_match:
+        numerator = int(fraction_match.group(1))
+        denominator = int(fraction_match.group(2))
+        if denominator == 0:
+            raise ValueError(f"'{raw}' tiene denominador cero.")
+
+        return Fraction(numerator= numerator,
+                        denominator= denominator)
+
+    if _NUMBER_RE.fullmatch(text):
+        return Fraction(text.replace(",", "."))
+
+    raise ValueError(f"'{raw}' no es un número válido.")
+
+def _collect_numeric_errors(form: dict) -> list[str]:
+    """
+        Recolecta los errores numéricos obtenidos
+        del formulario donde se entrega el modelo.
+        Nota sobre las restricciones:
+            Se espera que cuando una restricción
+            no incluye una variable, se indique
+            explícitamente que el coeficiente de esa
+            variable es 0.
+    """
+    errors = []
+
+    # Recorrer los coeficientes de la F.O y detectar errores
+    for index, value in enumerate(form["objective"]):
+        try:
+            _to_fraction(value)
+        except ValueError as e:
+            errors.append(
+                f"Error en función objetivo, coeficiente de x{index + 1}: {e}"
+            )
+
+    n_variables = form["n_variables"]
+
+    # Recorrer cada restricción del modelo
+    for row_index, row in enumerate(form["constraints"], 1):
+        # Recorrer cada variable de la restricción
+        for variable_index in range(n_variables):
+            # Si una restricción no incluye una variable,
+            # debe asignarse un cero como coeficiente de esa variable
+            # para esa restricción, de lo contrario marca error por
+            # celda vacía.
+            value = row.get(f"x{variable_index + 1}", "")
+
+            try:
+                _to_fraction(value)
+            except ValueError as e:
+                errors.append(
+                    f"Error en restricción {row_index}, "
+                    f"coeficiente de x{variable_index + 1}: {e}"
+                )
+
+        # Intentar convertir a fracción el lado derecho
+        try:
+            _to_fraction(row.get("rhs", ""))
+        except ValueError as e:
+            errors.append(f"Error en restricción {row_index}, lado derecho: {e}")
+
+    return errors
+
+def _collect_size_errors(form: dict) -> list[str]:
+    """
+        Valida errores de dimensión en el modelo.
+    """
+
+    errors = []
+
+    n_variables = form["n_variables"]
+    objective = form["objective"]
+    constraints = form["constraints"]
+
+    if n_variables < 1:
+        errors.append("El modelo debe tener al menos una variable.")
+    elif n_variables > MAX_VARIABLES:
+        errors.append(
+            f"El modelo no puede exceder {MAX_VARIABLES} variables."
+        )
+
+    if len(objective) != n_variables:
+        errors.append(
+            f"La función objetivo tiene {len(objective)} coeficientes, "
+            f"pero el modelo declara {n_variables} variables."
+        )
+
+    if len(constraints) == 0:
+        errors.append("El modelo debe tener al menos una restricción.")
+    elif len(constraints) > MAX_CONSTRAINTS:
+        errors.append(
+            f"El modelo no puede exceder {MAX_CONSTRAINTS} restricciones."
+        )
+
+    return errors
+
+def _collect_form_shape_errors(form: Any) -> list[str]:
+    """Comprueba que el formulario tenga la estructura esperada por el validador."""
+    if not isinstance(form, dict):
+        return ["El formulario debe ser un diccionario."]
+
+    errors = []
+
+    if "sense" not in form:
+        errors.append("Falta el campo 'sense'.")
+    elif not isinstance(form["sense"], str):
+        errors.append("El campo 'sense' debe ser texto.")
+
+    if "n_variables" not in form:
+        errors.append("Falta el campo 'n_variables'.")
+        n_variables = None
+    else:
+        n_variables = form["n_variables"]
+        if not isinstance(n_variables, int) or isinstance(n_variables, bool):
+            errors.append("El campo 'n_variables' debe ser un entero.")
+            n_variables = None
+
+    if "objective" not in form:
+        errors.append("Falta el campo 'objective'.")
+    elif not isinstance(form["objective"], list):
+        errors.append("El campo 'objective' debe ser una lista.")
+    else:
+        for index, value in enumerate(form["objective"], start=1):
+            if not isinstance(value, str):
+                errors.append(
+                    f"El coeficiente de x{index} en la función objetivo debe ser texto."
+                )
+
+    if "constraints" not in form:
+        errors.append("Falta el campo 'constraints'.")
+    elif not isinstance(form["constraints"], list):
+        errors.append("El campo 'constraints' debe ser una lista.")
+    else:
+        for row_index, row in enumerate(form["constraints"], start=1):
+            if not isinstance(row, dict):
+                errors.append(
+                    f"La restricción {row_index} debe ser un diccionario."
+                )
+                continue
+
+            for key, value in row.items():
+                if (
+                    isinstance(key, str)
+                    and key.startswith("x")
+                    and key[1:].isdigit()
+                    and int(key[1:]) > 0
+                    and not isinstance(value, str)
+                ):
+                    errors.append(
+                        f"El coeficiente de {key} en la "
+                        f"restricción {row_index} debe ser texto."
+                    )
+
+            if n_variables is not None:
+                for variable_index in range(1, n_variables + 1):
+                    key = f"x{variable_index}"
+                    if key not in row:
+                        errors.append(
+                            f"Falta el coeficiente de x{variable_index} "
+                            f"en la restricción {row_index}."
+                        )
+
+            if "rel" not in row:
+                errors.append(f"Falta la relación en la restricción {row_index}.")
+            elif not isinstance(row["rel"], str):
+                errors.append(
+                    f"La relación en la restricción {row_index} debe ser texto."
+                )
+
+            if "rhs" not in row:
+                errors.append(
+                    f"Falta el lado derecho en la restricción {row_index}."
+                )
+            elif not isinstance(row["rhs"], str):
+                errors.append(
+                    f"El lado derecho de la restricción {row_index} debe ser texto."
+                )
+
+    return errors
+
+def _parse_sense(value: OptimizationSense | str) -> OptimizationSense:
+    if isinstance(value, OptimizationSense):
+        return value
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("max", "maximize", "maximizar"):
+            return OptimizationSense.MAXIMIZE
+        if normalized in ("min", "minimize", "minimizar"):
+            return OptimizationSense.MINIMIZE
+
+    raise ValueError(f"Sentido de optimización no válido: {value}")
+
+
+def _parse_relation(value: Relation | str) -> Relation:
+    if isinstance(value, Relation):
+        return value
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+
+        if normalized in ("<=", "≤", "le"):
+            return Relation.LESS_EQUAL
+        if normalized in (">=", "≥", "ge"):
+            return Relation.GREAT_EQUAL
+        if normalized in ("=", "==", "eq"):
+            return Relation.EQUAL
+
+    raise ValueError(f"Relación no válida: {value}")
+
+def _collect_option_errors(form: dict) -> list[str]:
+    """
+        Recolecta errores de parseo sobre el sentido (max o min) y 
+        la relación (=, <=, >=) de las restricciones.
+    """
+    errors = []
+
+    try:
+        _parse_sense(form["sense"])
+    except ValueError as error:
+        errors.append(str(error))
+
+    for row_index, row in enumerate(form["constraints"], start=1):
+        try:
+            _parse_relation(row["rel"])
+        except ValueError as error:
+            errors.append(f"Restricción {row_index}: {error}")
+
+    return errors
+
+def validate_model_form(form: Any) -> tuple[LPModel | None, list[str]]:
+    """Valida el formulario y construye el modelo solo si no hay errores."""
+
+    shape_errors = _collect_form_shape_errors(form) # Errores de forma del diccionario DTO
+    if shape_errors:
+        return None, shape_errors
+
+    # Errores de tamaño
+    errors = _collect_size_errors(form)
+    # Errores numéricos
+    errors.extend(_collect_numeric_errors(form))
+    # Errres en desigualdades o max, min
+    errors.extend(_collect_option_errors(form))
+
+    if errors:
+        return None, errors
+
+    constraints_data = [
+        {
+            "coefficients": [row[f"x{variable_index + 1}"] for variable_index in range(form["n_variables"])],
+            "relation": row["rel"],
+            "rhs": row["rhs"],
+        }
+
+        for row in form["constraints"]
+    ]
+
+    try:
+        model = _build_model(
+            sense=form["sense"],
+            objective=form["objective"],
+            constraints_data= constraints_data,
+        )
+    except (ValueError, TypeError, KeyError) as e:
+        return None, [str(e)]
+
+    return model, []
+
+def _build_model(
+    sense: OptimizationSense | str,
+    objective: Sequence[Any],
+    constraints_data: Sequence[Mapping[str, Any]],
+) -> LPModel:
+    """Construye un LPModel a partir de sus datos.
+
+    La validación completa del formulario se realiza en
+    _validate_model_form. Aquí se convierten los valores y se crea
+    el modelo inmutable.
+    """
+    parsed_sense = _parse_sense(sense)
+    parsed_objective = tuple(_to_fraction(value) for value in objective)
+    n_variables = len(parsed_objective)
+
+    constraints = tuple(
+        Constraint(
+            coefficients=tuple(
+                _to_fraction(value)
+                for value in row["coefficients"]
+            ),
+            relation=_parse_relation(row["relation"]),
+            rhs=_to_fraction(row["rhs"]),
+            original_index=index + 1,
+        )
+        for index, row in enumerate(constraints_data)
+    )
+
+    return LPModel(
+        sense=parsed_sense,
+        objective=parsed_objective,
+        constraints=constraints,
+        n_variables=n_variables,
+    )
+</file>
+
+<file path="src/domain/__init__.py">
+
+</file>
+
+<file path="src/presentation/components/__init__.py">
+
+</file>
+
+<file path="src/presentation/components/plot_view.py">
+"""
+Vista del método gráfico (HU-04): figura de Plotly y tabla de vértices
+
+Reciben un `GraphicalResult` y devuelven una `go.Figure` o filas de tabla
+El formato de números llega como argumento
+
+La figura contiene:
+- una traza por restricción, con una etiqueta R1, R2, ... en el plano
+- la región factible sombreada (o un segmento/punto si es degenerada)
+- una anotación `(x1, x2) Z = …` por cada vértice FEV
+- la recta de isoutilidad/isocosto en ROJO (`line.color == 'red'`) por el óptimo
+- el segmento resaltado si hay óptimos múltiples
+"""
+from fractions import Fraction
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import plotly.graph_objects as go
+
+from domain.model.enums import OptimizationSense
+from domain.solver.solution import GraphicalResult
+from utils.formatting import (
+    FRACTION_MODE,
+    format_constraint,
+    format_number,
+    format_point,
+)
+
+Point = Tuple[Fraction, Fraction]
+
+# El rojo puro queda reservado para la recta de isoutilidad.
+_LINE_PALETTE = (
+    "#1f77b4", "#2ca02c", "#9467bd", "#8c564b",
+    "#e377c2", "#17becf", "#7f7f7f", "#bcbd22",
+)
+_REGION_FILL = "rgba(46, 134, 193, 0.25)"
+_FEV_COLOR = "#2e7d32"
+_INFEASIBLE_COLOR = "#757575"
+_OPTIMAL_SEGMENT_COLOR = "#ff9800"
+_OPTIMAL_MARKER_COLOR = "gold"
+
+
+def build_graphical_figure(
+    result: GraphicalResult,
+    *,
+    sense: OptimizationSense,
+    number_format: str = FRACTION_MODE,
+) -> go.Figure:
+    """Construye la gráfica 2D del método gráfico."""
+    xmin, xmax, ymin, ymax = (float(v) for v in result.window)
+    fig = go.Figure()
+
+    _add_region(fig, result.region_polygon)
+    _add_constraint_lines(fig, result, number_format)
+    _add_vertices(fig, result, number_format)
+
+    if result.optimal_segment is not None:
+        _add_optimal_segment(fig, result.optimal_segment)
+    if result.optimal_vertices:
+        _add_optimal_markers(fig, result.optimal_vertices, number_format)
+    if result.isoprofit_segment is not None and result.isoprofit_z is not None:
+        _add_isoprofit_line(
+            fig, result.isoprofit_segment, result.isoprofit_z, sense, number_format
+        )
+
+    fig.update_layout(
+        xaxis=dict(title="x₁", range=[xmin, xmax], zeroline=True, zerolinewidth=2),
+        yaxis=dict(title="x₂", range=[ymin, ymax], zeroline=True, zerolinewidth=2, scaleanchor="x", scaleratio=1,),
+        hovermode="closest",
+        height=580,
+        margin=dict(l=40, r=20, t=30, b=40),
+        legend=dict(orientation="h", yanchor="top", y=-0.15, x=0),
+        template="plotly_white",
+    )
+    return fig
+
+
+def build_vertices_rows(
+    result: GraphicalResult, number_format: str = FRACTION_MODE
+) -> List[Dict[str, str]]:
+    """Filas de la tabla bajo la gráfica: coordenadas, FEV / no factible y Z (solo si es FEV)."""
+    optimal = set(result.optimal_vertices)
+    rows: List[Dict[str, str]] = []
+    for index, vertex in enumerate(result.vertices, start=1):
+        if vertex.is_feasible:
+            kind = "FEV (óptimo)" if vertex.point in optimal else "FEV"
+            z_text = format_number(vertex.z_value, number_format)
+        else:
+            kind, z_text = "No factible", "—"
+        rows.append({
+            "Vértice": f"V{index}",
+            "x₁": format_number(vertex.point[0], number_format),
+            "x₂": format_number(vertex.point[1], number_format),
+            "Tipo": kind,
+            "Z": z_text,
+        })
+    return rows
+
+
+# Trazas
+
+def _add_region(fig: go.Figure, polygon: Sequence[Point]) -> None:
+    points = list(polygon)
+    if not points:
+        return  # región vacía: solo rectas
+
+    if len(points) >= 3 and _twice_area(points) != 0:
+        xs = [float(p[0]) for p in points] + [float(points[0][0])]
+        ys = [float(p[1]) for p in points] + [float(points[0][1])]
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys, mode="lines", fill="toself", fillcolor=_REGION_FILL,
+            line=dict(width=0), name="Región factible", hoverinfo="skip",
+        ))
+        return
+
+    # Degenerada (igualdad o punto): se dibuja como línea, no como relleno.
+    start, end = min(points), max(points)
+    fig.add_trace(go.Scatter(
+        x=[float(start[0]), float(end[0])], y=[float(start[1]), float(end[1])],
+        mode="lines+markers", line=dict(color="#2e86c1", width=5),
+        name="Región factible (segmento o punto)", hoverinfo="skip",
+    ))
+
+
+def _add_constraint_lines(
+    fig: go.Figure, result: GraphicalResult, number_format: str
+) -> None:
+    for index, line in enumerate(result.lines):
+        color = _LINE_PALETTE[index % len(_LINE_PALETTE)]
+        legend_name = (
+            f"{line.label}: "
+            f"{format_constraint(line.coefficients, line.relation.value, line.rhs, number_format)}"
+        )
+        if line.p1 is None or line.p2 is None:
+            # La recta no cruza la ventana: queda en la leyenda, sin trazo.
+            fig.add_trace(go.Scatter(
+                x=[None], y=[None], mode="lines", line=dict(color=color, width=2),
+                name=f"{legend_name} (fuera de la ventana)",
+            ))
+            continue
+
+        fig.add_trace(go.Scatter(
+            x=[float(line.p1[0]), float(line.p2[0])],
+            y=[float(line.p1[1]), float(line.p2[1])],
+            mode="lines", line=dict(color=color, width=2),
+            name=legend_name, hovertext=legend_name, hoverinfo="text",
+        ))
+        # Etiqueta R# al 85 % del trazo, para que no choque con los ejes.
+        label_x = line.p1[0] + Fraction(85, 100) * (line.p2[0] - line.p1[0])
+        label_y = line.p1[1] + Fraction(85, 100) * (line.p2[1] - line.p1[1])
+        fig.add_annotation(
+            x=float(label_x), y=float(label_y), text=f"<b>{line.label}</b>",
+            showarrow=False, font=dict(color=color, size=13),
+            bgcolor="rgba(255,255,255,0.75)",
+        )
+
+
+def _add_vertices(
+    fig: go.Figure, result: GraphicalResult, number_format: str
+) -> None:
+    xmin, xmax, ymin, ymax = result.window
+    feasible, infeasible = [], []
+    for vertex in result.vertices:
+        x, y = vertex.point
+        if not (xmin <= x <= xmax and ymin <= y <= ymax):
+            continue  # vértice con coordenadas negativas: fuera de la ventana
+        (feasible if vertex.is_feasible else infeasible).append(vertex)
+
+    if infeasible:
+        fig.add_trace(go.Scatter(
+            x=[float(v.point[0]) for v in infeasible],
+            y=[float(v.point[1]) for v in infeasible],
+            mode="markers", name="No factible",
+            marker=dict(symbol="x", size=8, color=_INFEASIBLE_COLOR),
+            hovertext=[
+                f"{format_point(v.point, number_format)} — no factible"
+                for v in infeasible
+            ],
+            hoverinfo="text",
+        ))
+
+    if feasible:
+        fig.add_trace(go.Scatter(
+            x=[float(v.point[0]) for v in feasible],
+            y=[float(v.point[1]) for v in feasible],
+            mode="markers", name="Vértice FEV",
+            marker=dict(symbol="circle", size=9, color=_FEV_COLOR),
+            hovertext=[
+                f"{format_point(v.point, number_format)} — "
+                f"Z = {format_number(v.z_value, number_format)}"
+                for v in feasible
+            ],
+            hoverinfo="text",
+        ))
+        for vertex in feasible:
+            fig.add_annotation(
+                x=float(vertex.point[0]), y=float(vertex.point[1]),
+                text=(
+                    f"{format_point(vertex.point, number_format)} "
+                    f"Z = {format_number(vertex.z_value, number_format)}"
+                ),
+                showarrow=False, xanchor="left", xshift=8, yshift=12,
+                font=dict(size=11, color=_FEV_COLOR),
+            )
+
+
+def _add_optimal_segment(
+    fig: go.Figure, segment: Tuple[Point, Point]
+) -> None:
+    start, end = segment
+    fig.add_trace(go.Scatter(
+        x=[float(start[0]), float(end[0])], y=[float(start[1]), float(end[1])],
+        mode="lines", line=dict(color=_OPTIMAL_SEGMENT_COLOR, width=8),
+        opacity=0.8, name="Segmento óptimo (infinitos óptimos)", hoverinfo="skip",
+    ))
+
+
+def _add_optimal_markers(
+    fig: go.Figure, optimal_vertices: Sequence[Point], number_format: str
+) -> None:
+    fig.add_trace(go.Scatter(
+        x=[float(p[0]) for p in optimal_vertices],
+        y=[float(p[1]) for p in optimal_vertices],
+        mode="markers",
+        name="Óptimo" if len(optimal_vertices) == 1 else "Óptimos",
+        marker=dict(
+            symbol="star", size=17, color=_OPTIMAL_MARKER_COLOR,
+            line=dict(color="black", width=1),
+        ),
+        hovertext=[f"Óptimo {format_point(p, number_format)}" for p in optimal_vertices],
+        hoverinfo="text",
+    ))
+
+
+def _add_isoprofit_line(
+    fig: go.Figure,
+    segment: Tuple[Point, Point],
+    z_value: Fraction,
+    sense: OptimizationSense,
+    number_format: str,
+) -> None:
+    kind = "Isocosto" if sense == OptimizationSense.MINIMIZE else "Isoutilidad"
+    name = f"{kind} (Z = {format_number(z_value, number_format)})"
+    start, end = segment
+    fig.add_trace(go.Scatter(
+        x=[float(start[0]), float(end[0])], y=[float(start[1]), float(end[1])],
+        mode="lines", line=dict(color="red", width=2, dash="dash"),
+        name=name, hovertext=name, hoverinfo="text",
+    ))
+
+
+def _twice_area(points: Sequence[Point]) -> Fraction:
+    """Doble del área con signo (fórmula del cordón); 0 si los puntos son colineales."""
+    total = Fraction(0)
+    for i, (x1, y1) in enumerate(points):
+        x2, y2 = points[(i + 1) % len(points)]
+        total += x1 * y2 - x2 * y1
+    return total
+
+def hidden_vertices_count(result: GraphicalResult) -> int:
+    """Cuántos vértices de la tabla no se dibujan por caer fuera de la ventana."""
+    xmin, xmax, ymin, ymax = result.window
+    return sum(
+        1 for v in result.vertices
+        if not (xmin <= v.point[0] <= xmax and ymin <= v.point[1] <= ymax)
+    )
+</file>
+
+<file path="src/presentation/tabs/__init__.py">
+
+</file>
+
+<file path="src/presentation/tabs/solve_tab.py">
+"""
+Pestaña "Resolver"
+
+Flujo en cada ejecución:
+    1. Si no hay modelo confirmado, se pide definirlo
+    2. SELECTOR de método (siempre visible). El aviso de n ≠ 2 sale AL SELECCIONAR el método gráfico, sin esperar a pulsar Resolver
+    3. Botón Resolver -> caso de uso `solve_lp` -> `st.session_state.solution`
+    4. Resultados: estado, valores, notas, gráfica de Plotly y tabla de vértices (HU-04)
+
+Estado que usa (st.session_state)
+- model_defined / model : los escribe model_tab
+- solution              : la `Solution` calculada, o None
+- solution_method       : el `SolverMethod` con el que se calculó `solution`
+- number_format         : "Fracción" | "Decimal"
+
+Una solución solo se muestra si coincide con el método elegido y con el modelo actual (`model_fingerprint`), para no enseñar resultados desactualizados (HU-05)
+
+Gran M sigue usando `get_stub_solution` (transitorio) hasta que HU-06 exista; el método gráfico ya usa el solver real
+"""
+from fractions import Fraction
+
+import streamlit as st
+
+from application.use_cases.solve_lp import solve_lp
+from domain.model.lp_model import LPModel
+from domain.solver.solution import (
+    BasisInfo,
+    Solution,
+    SolutionStatus,
+)
+from domain.solver.solver_factory import SolverMethod
+from domain.solver.step import PivotInfo, Step
+from presentation.components.plot_view import (
+    build_graphical_figure,
+    build_vertices_rows,
+    hidden_vertices_count,
+)
+from utils.formatting import FRACTION_MODE, format_number, subscript
+
+_METHOD_LABELS = {
+    SolverMethod.GRAFICO: "Gráfico",
+    SolverMethod.GRAN_M: "Gran M",
+}
+
+
+# Render principal
+# ================
+
+def render_solve_tab() -> None:
+    if not st.session_state.get("model_defined") or st.session_state.get("model") is None:
+        st.warning(
+            "Primero define y confirma un modelo en la pestaña **Definir Modelo**.",
+            icon=":material/lock:",
+        )
+        return
+
+    model: LPModel = st.session_state.model
+    number_format = st.session_state.get("number_format", FRACTION_MODE)
+
+    method = st.radio(
+        "Método de resolución",
+        options=list(_METHOD_LABELS),
+        format_func=lambda m: _METHOD_LABELS[m],
+        horizontal=True,
+        key="solve_method",
+    )
+
+    # Aviso de n ≠ 2: aparece al seleccionar el método, no al resolver.
+    graphical_not_applicable = (
+        method == SolverMethod.GRAFICO and model.n_variables != 2
+    )
+    if graphical_not_applicable:
+        st.warning(
+            f"El método gráfico solo aplica con exactamente 2 variables de decisión "
+            f"(tu modelo tiene {model.n_variables}). Selecciona **Gran M** para resolverlo.",
+            icon=":material/block:",
+        )
+    elif method == SolverMethod.GRAN_M:
+        st.caption(
+            "Gran M está en desarrollo: por ahora se muestra una solución de ejemplo (stub)."
+        )
+
+    solve_label = "Resolver (Stub)" if method == SolverMethod.GRAN_M else "Resolver"
+    if st.button(
+        solve_label,
+        type="primary",
+        icon=":material/play_arrow:",
+        disabled=graphical_not_applicable,
+    ):
+        _solve_and_store(model, method)
+
+    solution = _current_solution(model, method)
+    if solution is None:
+        if not graphical_not_applicable:
+            st.info("Pulsa **Resolver** para ejecutar el método elegido.", icon=":material/info:")
+        return
+
+    if solution.graphical is not None:
+        _render_graphical_result(solution, model, number_format)
+    else:
+        _render_stub_result(solution)
+
+
+# Estado
+# ======
+
+def _solve_and_store(model: LPModel, method: SolverMethod) -> None:
+    """Ejecuta el caso de uso y guarda el resultado; los errores se muestran, no rompen la app."""
+    try:
+        with st.spinner("Resolviendo..."):
+            if method == SolverMethod.GRAN_M:
+                solution = get_stub_solution(model)  # transitorio hasta HU-06
+            else:
+                solution = solve_lp(model, method)
+    except (ValueError, NotImplementedError) as error:
+        st.error(str(error), icon=":material/error:")
+        return
+
+    st.session_state.solution = solution
+    st.session_state.solution_method = method
+    st.session_state.current_step = 0
+
+
+def _current_solution(model: LPModel, method: SolverMethod):
+    """La solución guardada, solo si corresponde al método elegido y al modelo vigente."""
+    solution = st.session_state.get("solution")
+    if solution is None:
+        return None
+    if st.session_state.get("solution_method") != method:
+        return None
+    if solution.model_fingerprint != hash(model):
+        return None
+    return solution
+
+
+# Resultados del método gráfico
+# =============================
+
+def _render_graphical_result(
+    solution: Solution, model: LPModel, number_format: str
+) -> None:
+    _render_status_banner(solution)
+
+    if solution.status == SolutionStatus.OPTIMA:
+        _render_optimal_values(solution, number_format)
+
+    for note in solution.notes:
+        st.markdown(f"- {note}")
+
+    graphical = solution.graphical
+    figure = build_graphical_figure(
+        graphical, sense=model.sense, number_format=number_format
+    )
+    st.plotly_chart(figure, width="stretch")
+
+    st.subheader("Vértices")
+    hidden = hidden_vertices_count(graphical)
+    if hidden:
+        st.caption(
+            f"La tabla lista todas las intersecciones de rectas frontera; "
+            f"la gráfica solo dibuja las que caen en la ventana de visualización "
+            f"({hidden} quedan fuera)."
+        )
+    st.dataframe(
+        build_vertices_rows(graphical, number_format),
+        hide_index=True,
+        width="stretch",
+    )
+
+    if solution.status == SolutionStatus.OPTIMA and solution.slacks:
+        with st.expander("Holguras y excesos en el óptimo"):
+            for index, slack in enumerate(solution.slacks, start=1):
+                st.markdown(f"- **R{index}**: {format_number(slack, number_format)}")
+
+
+def _render_status_banner(solution: Solution) -> None:
+    if solution.status == SolutionStatus.OPTIMA:
+        st.success(solution.message, icon=":material/check_circle:")
+    elif solution.status == SolutionStatus.NO_FACTIBLE:
+        st.error(solution.message, icon=":material/error:")
+    else:
+        st.warning(solution.message, icon=":material/warning:")
+
+
+def _render_optimal_values(solution: Solution, number_format: str) -> None:
+    """Estado, Z y el/los vértice(s) óptimo(s). Con dos extremos se informa el segmento."""
+    with st.container(border=True):
+        columns = st.columns(3)
+        columns[0].metric("Estado", solution.status.value)
+        if solution.optimal_value is not None:
+            columns[1].metric("Z*", format_number(solution.optimal_value, number_format))
+        columns[2].metric("Solución", _format_values(solution.values, number_format))
+
+        if solution.alt_values:
+            # Orden de values/alt_values provisional (por coordenadas) hasta que Gran M fije el criterio.
+            st.info(
+                f"Otro vértice óptimo: {_format_values(solution.alt_values, number_format)}. "
+                "Hay infinitos óptimos sobre el segmento que los une.",
+                icon=":material/join:",
+            )
+
+
+def _format_values(values, number_format: str) -> str:
+    parts = []
+    for name, value in values:
+        shown = f"x{subscript(int(name[1:]))}" if name[1:].isdigit() else name
+        parts.append(f"{shown} = {format_number(value, number_format)}")
+    return ", ".join(parts)
+
+
+# Resultados del stub (Gran M transitorio)
+# ========================================
+
+def _render_stub_result(solution: Solution) -> None:
+    with st.container(border=True):
+        col_status, col_z = st.columns(2)
+        col_status.metric("Estado", solution.status.value)
+        if solution.optimal_value is not None:
+            col_z.metric("Z (ejemplo)", str(solution.optimal_value))
+        st.caption(
+            f"{len(solution.steps)} iteraciones generadas. "
+            "Aquí se conectan la navegación (HU-08) y el tableau (HU-09)."
+        )
+    st.info(solution.message, icon=":material/science:")
+
+
+# Stub transitorio (se elimina cuando Gran M devuelva soluciones reales)
+def get_stub_solution(model: LPModel) -> Solution:
+    """
+    Solution hardcodeada de Wyndor (Max 3x1+5x2; x1<=4; 2x2<=12; 3x1+2x2<=18).
+    Solo para probar la UI (HU-08/HU-09) sin esperar a los solvers reales.
+    Los números son exactos y coherentes entre sí, pero NO son el resultado
+    de resolver el modelo confirmado: el message y las notes lo aclaran.
+    """
+    F = Fraction
+    column_labels = ("Z", "x1", "x2", "S1", "S2", "S3", "RHS")
+    row_labels = ("0", "1", "2", "3")
+    
+    step_0 = Step(
+        iteration=0,
+        row_labels=row_labels,
+        column_labels=column_labels,
+        tableau=(
+            (F(1), F(-3), F(-5), F(0), F(0),   F(0), F(0)),
+            (F(0), F(1),  F(0),  F(1), F(0),   F(0), F(4)),
+            (F(0), F(0),  F(2),  F(0), F(1),   F(0), F(12)),
+            (F(0), F(3),  F(2),  F(0), F(0),   F(1), F(18)),
+        ),
+        basic_variables=("S1", "S2", "S3"),
+        ratios=(None, F(6), F(9)),
+        pivot=PivotInfo(row=2, column=2),
+        notes=(),
+        justification=(
+            "Entra x2: es la variable con el coeficiente más negativo en la "
+            "fila 0 (−5). Razones: R1 no aplica (coef. 0 → —), 12/2 = 6, "
+            "18/2 = 9 → mínima 6 en la Ec 2, sale S2. Pivote = 2."
+        ),
+    )
+        
+    step_1 = Step(
+        iteration=1,
+        row_labels=row_labels,
+        column_labels=column_labels,
+        tableau=(
+            (F(1), F(-3), F(0), F(0), F(5, 2),  F(0), F(30)),
+            (F(0), F(1),  F(0), F(1), F(0),     F(0), F(4)),
+            (F(0), F(0),  F(1), F(0), F(1, 2),  F(0), F(6)),
+            (F(0), F(3),  F(0), F(0), F(-1),    F(1), F(6)),
+        ),
+        basic_variables=("S1", "x2", "S3"),
+        ratios=(F(4), None, F(2)),
+        pivot=PivotInfo(row=3, column=1),
+        notes=(),
+        justification=(
+            "Entra x1: coeficiente más negativo en la fila 0 (−3). "
+            "Razones: 4/1 = 4, R2 no aplica (coef. 0 → —), 6/3 = 2 "
+            "→ mínima 2 en la Ec 3, sale S3. Pivote = 3."
+        ),
+    )
+
+    step_2 = Step(
+        iteration=2,
+        row_labels=row_labels,
+        column_labels=column_labels,
+        tableau=(
+            (F(1), F(0), F(0), F(1), F(3, 2),  F(1),    F(36)),
+            (F(0), F(0), F(0), F(1), F(1, 3),  F(-1, 3), F(2)),
+            (F(0), F(0), F(1), F(0), F(1, 2),  F(0),    F(6)),
+            (F(0), F(1), F(0), F(0), F(-1, 3), F(1, 3),  F(2)),
+        ),
+        basic_variables=("S1", "x2", "x1"),
+        ratios=(None, None, None),
+        pivot=None,
+        notes=("Prueba de optimalidad cumplida: no hay negativos en la fila 0.",),
+        justification=(
+            "Ningún coeficiente negativo en la fila 0 → la solución es óptima. "
+            "Z = 36 con x1 = 2, x2 = 6."
+        ),
+    )
+    
+    basis = BasisInfo(
+        basic_variables=("S1", "x2", "x1"),
+        basis_inverse=(
+            (F(1), F(1, 3),  F(-1, 3)),
+            (F(0), F(1, 2),  F(0)),
+            (F(0), F(-1, 3), F(1, 3)),
+        ),
+        row_to_constraint=(1, 2, 3),
+        rhs_sign_flipped=(False, False, False),
+        sense_factor=1,
+    )
+    
+    return Solution(
+        status=SolutionStatus.OPTIMA,
+        values=(("x1", F(2)), ("x2", F(6))),
+        optimal_value=F(36),
+        slacks=(F(2), F(0), F(0)),
+        alt_values=(),
+        steps=(step_0, step_1, step_2),
+        notes=(
+            "Datos de prueba (stub) de Wyndor: no son el resultado de resolver tu modelo.",
+        ),
+        message="Solución de ejemplo para probar la interfaz (aún no hay solver real).",
+        basis_info=basis,
+        model_fingerprint=hash(model),
+    )
+</file>
+
+<file path="src/presentation/__init__.py">
+
+</file>
+
+<file path="src/utils/__init__.py">
+
+</file>
+
+<file path="src/utils/formatting.py">
+"""
+Formato compartido de números y expresiones (Fracción / Decimal).
+
+El modo de formato lo decide quien llama (la UI lo lee de `st.session_state.number_format`).
+"""
+from fractions import Fraction
+from typing import Sequence, Tuple
+
+FRACTION_MODE = "Fracción"
+DECIMAL_MODE = "Decimal"
+
+_SUBSCRIPTS = str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")
+
+
+def subscript(n: int) -> str:
+    """1 -> '₁', 12 -> '₁₂'."""
+    return str(n).translate(_SUBSCRIPTS)
+
+
+def format_number(value: Fraction, mode: str = FRACTION_MODE) -> str:
+    """
+    Fracción: '3/2' o '4'.
+    Decimal: hasta 4 decimales sin ceros sobrantes ('1.5', '4', '0.3333').
+    """
+    value = Fraction(value)
+    if mode == DECIMAL_MODE:
+        if value.denominator == 1:
+            return str(value.numerator)
+        text = f"{float(value):.4f}".rstrip("0").rstrip(".")
+        return "0" if text in ("-0", "") else text
+    if value.denominator == 1:
+        return str(value.numerator)
+    return f"{value.numerator}/{value.denominator}"
+
+
+def format_point(point: Tuple[Fraction, Fraction], mode: str = FRACTION_MODE) -> str:
+    """(2, 6) o (0, 5/2)."""
+    return f"({format_number(point[0], mode)}, {format_number(point[1], mode)})"
+
+
+def format_linear_expression(
+    coefficients: Sequence[Fraction], mode: str = FRACTION_MODE
+) -> str:
+    """'3·x₁ + 5·x₂'; los coeficientes negativos se escriben con ' − '."""
+    pieces = []
+    for index, coefficient in enumerate(coefficients, start=1):
+        magnitude = format_number(abs(Fraction(coefficient)), mode)
+        term = f"{magnitude}·x{subscript(index)}"
+        if not pieces:
+            pieces.append(f"−{term}" if coefficient < 0 else term)
+        else:
+            pieces.append(f"{'−' if coefficient < 0 else '+'} {term}")
+    return " ".join(pieces)
+
+
+_RELATION_SYMBOL = {"<=": "≤", ">=": "≥", "=": "="}
+
+
+def format_constraint(
+    coefficients: Sequence[Fraction],
+    relation_value: str,
+    rhs: Fraction,
+    mode: str = FRACTION_MODE,
+) -> str:
+    """'3·x₁ + 2·x₂ ≤ 18'. `relation_value` es `Relation.<X>.value`."""
+    symbol = _RELATION_SYMBOL.get(relation_value, relation_value)
+    return f"{format_linear_expression(coefficients, mode)} {symbol} {format_number(rhs, mode)}"
+</file>
+
+<file path="src/__init__.py">
+
+</file>
+
+<file path="tests/application/__init__.py">
+
+</file>
+
+<file path="tests/application/test_solve_lp.py">
+"""Pruebas del caso de uso solve_lp. Sin Streamlit."""
+import unittest
+from fractions import Fraction as F
+
+from application.use_cases.solve_lp import solve_lp
+from domain.solver.solution import SolutionStatus
+from domain.solver.solver_factory import SolverMethod
+from domain.validation.parsing import validate_model_form
+
+
+def _wyndor():
+    model, errors = validate_model_form({
+        "sense": "max",
+        "n_variables": 2,
+        "objective": ["3", "5"],
+        "constraints": [
+            {"x1": "1", "x2": "0", "rel": "<=", "rhs": "4"},
+            {"x1": "0", "x2": "2", "rel": "<=", "rhs": "12"},
+            {"x1": "3", "x2": "2", "rel": "<=", "rhs": "18"},
+        ],
+    })
+    assert not errors
+    return model
+
+
+class TestSolveLp(unittest.TestCase):
+    def test_grafico_devuelve_solution_con_payload(self):
+        s = solve_lp(_wyndor(), SolverMethod.GRAFICO)
+        self.assertEqual(s.status, SolutionStatus.OPTIMA)
+        self.assertEqual(s.optimal_value, F(36))
+        self.assertIsNotNone(s.graphical)
+
+    def test_metodos_pendientes_avisan(self):
+        for method in (SolverMethod.GRAN_M, SolverMethod.REVISADO):
+            with self.assertRaises(NotImplementedError):
+                solve_lp(_wyndor(), method)
+
+    def test_grafico_con_tres_variables_propaga_valueerror(self):
+        model, errors = validate_model_form({
+            "sense": "max",
+            "n_variables": 3,
+            "objective": ["1", "1", "1"],
+            "constraints": [
+                {"x1": "1", "x2": "1", "x3": "1", "rel": "<=", "rhs": "1"},
+            ],
+        })
+        assert not errors
+        with self.assertRaises(ValueError):
+            solve_lp(model, SolverMethod.GRAFICO)
+
+
+if __name__ == "__main__":
+    unittest.main()
+</file>
+
+<file path="tests/domain/__init__.py">
+
+</file>
+
+<file path="tests/domain/test_graphical_solver.py">
+"""Pruebas de dominio del método gráfico (HU-04). Sin Streamlit."""
+import unittest
+from fractions import Fraction as F
+
+from domain.solver.graphical_solver import GraphicalSolver
+from domain.solver.solution import SolutionStatus
+from domain.solver.solver_factory import SolverFactory, SolverMethod
+from domain.validation.parsing import validate_model_form
+
+WYNDOR_ROWS = [
+    (["1", "0"], "<=", "4"),
+    (["0", "2"], "<=", "12"),
+    (["3", "2"], "<=", "18"),
+]
+
+
+def _model(sense, objective, rows):
+    form = {
+        "sense": sense,
+        "n_variables": len(objective),
+        "objective": list(objective),
+        "constraints": [
+            {
+                **{f"x{i + 1}": c for i, c in enumerate(coefficients)},
+                "rel": relation,
+                "rhs": rhs,
+            }
+            for coefficients, relation, rhs in rows
+        ],
+    }
+    model, errors = validate_model_form(form)
+    if errors or model is None:
+        raise AssertionError(f"Modelo de prueba inválido: {errors}")
+    return model
+
+
+def _solve(sense, objective, rows):
+    return GraphicalSolver().solve(_model(sense, objective, rows))
+
+
+class TestGraphicalSolver(unittest.TestCase):
+    def test_wyndor_vertices_y_optimo(self):
+        s = _solve("max", ["3", "5"], WYNDOR_ROWS)
+        self.assertEqual(s.status, SolutionStatus.OPTIMA)
+        self.assertEqual(dict(s.values), {"x1": F(2), "x2": F(6)})
+        self.assertEqual(s.optimal_value, F(36))
+        self.assertEqual(s.slacks, (F(2), F(0), F(0)))
+
+        fev = {v.point for v in s.graphical.vertices if v.is_feasible}
+        no_fev = {v.point for v in s.graphical.vertices if not v.is_feasible}
+        self.assertEqual(fev, {
+            (F(0), F(0)), (F(4), F(0)), (F(4), F(3)),
+            (F(2), F(6)), (F(0), F(6)),
+        })
+        self.assertEqual(no_fev, {(F(0), F(9)), (F(4), F(6)), (F(6), F(0))})
+
+    def test_grafico_no_produce_iteraciones_ni_base(self):
+        for rows, sense, obj in [
+            (WYNDOR_ROWS, "max", ["3", "5"]),
+            ([(["1", "1"], "<=", "2"), (["1", "1"], ">=", "5")], "max", ["1", "1"]),
+            ([(["1", "-1"], "<=", "1"), (["-1", "1"], "<=", "2")], "max", ["1", "1"]),
+        ]:
+            s = _solve(sense, obj, rows)
+            self.assertEqual(s.steps, ())
+            self.assertIsNone(s.basis_info)
+            self.assertIsNotNone(s.graphical)
+
+    def test_rubrica_1_redundante_no_aporta_vertices(self):
+        s = _solve("max", ["50", "80"], [
+            (["2", "1"], "<=", "100"),
+            (["1", "3"], "<=", "90"),
+            (["0", "1"], "<=", "40"),
+        ])
+        self.assertEqual(dict(s.values), {"x1": F(42), "x2": F(16)})
+        self.assertEqual(s.optimal_value, F(3380))
+        self.assertEqual(s.slacks, (F(0), F(0), F(24)))
+        self.assertTrue(all(
+            v.point[1] != 40 for v in s.graphical.vertices if v.is_feasible
+        ))
+
+    def test_rubrica_2_rhs_negativo_evalua_original(self):
+        s = _solve("min", ["4", "1"], [
+            (["3", "1"], "=", "3"),
+            (["4", "3"], ">=", "6"),
+            (["-1", "-2"], ">=", "-4"),
+        ])
+        self.assertEqual(dict(s.values), {"x1": F(2, 5), "x2": F(9, 5)})
+        self.assertEqual(s.optimal_value, F(17, 5))
+        # Holguras sobre el modelo ORIGINAL: exceso de R2 = 1, R3 activa.
+        self.assertEqual(s.slacks, (F(0), F(1), F(0)))
+        # Decisión aprobada: en el gráfico se omite la nota de transformación.
+        self.assertFalse(any("transform" in n.lower() for n in s.notes))
+
+    def test_rubrica_4_no_factible(self):
+        s = _solve("max", ["1", "1"], [
+            (["1", "1"], "<=", "2"),
+            (["1", "1"], ">=", "5"),
+        ])
+        self.assertEqual(s.status, SolutionStatus.NO_FACTIBLE)
+        self.assertEqual(s.values, ())
+        self.assertIsNone(s.optimal_value)
+        self.assertEqual(s.graphical.region_polygon, ())
+        self.assertEqual(s.graphical.optimal_vertices, ())
+        # Las rectas sí se entregan para dibujarlas sin región.
+        self.assertEqual(len(s.graphical.lines), 2)
+        self.assertTrue(s.graphical.vertices)
+
+    def test_rubrica_5_no_acotado(self):
+        s = _solve("max", ["1", "1"], [
+            (["1", "-1"], "<=", "1"),
+            (["-1", "1"], "<=", "2"),
+        ])
+        self.assertEqual(s.status, SolutionStatus.NO_ACOTADA)
+        self.assertIn((F(1), F(1)), s.graphical.improving_directions)
+        self.assertTrue(s.graphical.region_is_unbounded)
+        self.assertTrue(s.graphical.region_polygon)  # sombreada hasta la ventana
+        self.assertEqual(s.values, ())
+
+    def test_no_acotado_informa_direccion_con_cifras(self):
+        """Requiere el Fix 3 (dirección en la nota)."""
+        s = _solve("max", ["1", "1"], [
+            (["1", "-1"], "<=", "1"),
+            (["-1", "1"], "<=", "2"),
+        ])
+        self.assertTrue(any("(1, 1)" in n and "ΔZ = 2" in n for n in s.notes))
+
+    def test_region_abierta_con_optimo_no_es_no_acotada(self):
+        s = _solve("min", ["1", "2"], [(["1", "1"], ">=", "2")])
+        self.assertEqual(s.status, SolutionStatus.OPTIMA)
+        self.assertEqual(dict(s.values), {"x1": F(2), "x2": F(0)})
+        self.assertTrue(s.graphical.region_is_unbounded)
+        self.assertEqual(s.graphical.improving_directions, ())
+        self.assertTrue(any("no mejora" in n for n in s.notes))
+
+    def test_rubrica_6_optimos_multiples(self):
+        s = _solve("max", ["2", "4"], [
+            (["1", "2"], "<=", "5"),
+            (["1", "1"], "<=", "4"),
+        ])
+        self.assertEqual(s.optimal_value, F(10))
+        self.assertEqual(dict(s.values), {"x1": F(0), "x2": F(5, 2)})
+        self.assertEqual(dict(s.alt_values), {"x1": F(3), "x2": F(1)})
+        self.assertEqual(
+            s.graphical.optimal_vertices, ((F(0), F(5, 2)), (F(3), F(1)))
+        )
+        self.assertEqual(
+            s.graphical.optimal_segment, ((F(0), F(5, 2)), (F(3), F(1)))
+        )
+        self.assertTrue(any("λ" in n for n in s.notes))
+
+    def test_igualdad_produce_segmento(self):
+        s = _solve("max", ["3", "5"], [
+            (["1", "0"], "<=", "4"),
+            (["0", "2"], "<=", "12"),
+            (["3", "2"], "=", "18"),
+        ])
+        self.assertEqual(s.status, SolutionStatus.OPTIMA)
+        self.assertEqual(dict(s.values), {"x1": F(2), "x2": F(6)})
+        self.assertEqual(len(s.graphical.region_polygon), 2)
+
+    def test_objetivo_constante_sin_segmento(self):
+        s = _solve("max", ["0", "0"], [
+            (["1", "0"], "<=", "1"),
+            (["0", "1"], "<=", "1"),
+        ])
+        self.assertEqual(s.status, SolutionStatus.OPTIMA)
+        self.assertEqual(s.optimal_value, F(0))
+        self.assertEqual(s.alt_values, ())
+        self.assertIsNone(s.graphical.optimal_segment)
+        self.assertIsNone(s.graphical.isoprofit_segment)
+        self.assertEqual(len(s.graphical.optimal_vertices), 4)
+        self.assertTrue(any("constante" in n for n in s.notes))
+
+    def test_optimos_en_semirrecta(self):
+        s = _solve("max", ["1", "0"], [(["1", "0"], "<=", "4")])
+        self.assertEqual(s.status, SolutionStatus.OPTIMA)
+        self.assertEqual(dict(s.values), {"x1": F(4), "x2": F(0)})
+        self.assertTrue(s.graphical.region_is_unbounded)
+        self.assertIsNone(s.graphical.optimal_segment)
+        self.assertTrue(any("semirrecta" in n for n in s.notes))
+
+    def test_isoutilidad_pasa_por_el_optimo(self):
+        s = _solve("max", ["3", "5"], WYNDOR_ROWS)
+        p1, p2 = s.graphical.isoprofit_segment
+        for p in (p1, p2):
+            self.assertEqual(3 * p[0] + 5 * p[1], s.optimal_value)
+        self.assertEqual(s.graphical.isoprofit_z, F(36))
+
+    def test_restriccion_degenerada_redundante(self):
+        s = _solve("max", ["1", "1"], [
+            (["0", "0"], "<=", "5"),
+            (["1", "0"], "<=", "1"),
+            (["0", "1"], "<=", "1"),
+        ])
+        self.assertEqual(s.status, SolutionStatus.OPTIMA)
+        self.assertEqual(dict(s.values), {"x1": F(1), "x2": F(1)})
+        self.assertEqual([l.label for l in s.graphical.lines], ["R2", "R3"])
+
+    def test_restriccion_degenerada_contradictoria(self):
+        s = _solve("max", ["1", "1"], [
+            (["0", "0"], "<=", "-1"),
+            (["1", "0"], "<=", "1"),
+        ])
+        self.assertEqual(s.status, SolutionStatus.NO_FACTIBLE)
+        self.assertEqual(s.graphical.region_polygon, ())
+
+    def test_ventana_con_margen_y_ejes_visibles(self):
+        s = _solve("max", ["3", "5"], WYNDOR_ROWS)
+        xmin, xmax, ymin, ymax = s.graphical.window
+        self.assertLess(xmin, 0)
+        self.assertLess(ymin, 0)
+        for v in s.graphical.vertices:
+            self.assertTrue(xmin <= v.point[0] <= xmax)
+            self.assertTrue(ymin <= v.point[1] <= ymax)
+
+    def test_n_distinto_de_2_contrato_defensivo(self):
+        model = _model("max", ["1", "1", "1"], [(["1", "1", "1"], "<=", "1")])
+        with self.assertRaises(ValueError):
+            GraphicalSolver().solve(model)
+
+    def test_factory_registra_grafico(self):
+        self.assertIsInstance(
+            SolverFactory.create(SolverMethod.GRAFICO), GraphicalSolver
+        )
+
+    def test_fingerprint_del_modelo(self):
+        model = _model("max", ["3", "5"], WYNDOR_ROWS)
+        self.assertEqual(GraphicalSolver().solve(model).model_fingerprint,
+                         hash(model))
+
+
+if __name__ == "__main__":
+    unittest.main()
+</file>
+
+<file path="tests/domain/test_linalg.py">
+"""
+Pruebas unitarias para el módulo de álgebra lineal con fracciones exactas.
+Ejecutar: python -m unittest tests/domain/test_linalg.py -v
+"""
+import unittest
+from fractions import Fraction
+
+from src.domain.solver.linalg import (
+    Matrix,
+    Vector,
+    identity_matrix,
+    matrix_multiply,
+    matrix_vector_multiply,
+    pivot_matrix,
+    invert_matrix,
+    transpose,
+    get_column,
+    get_row,
+)
+
+
+# ============================================================================
+# Helpers para construir matrices de forma legible en las pruebas
+# ============================================================================
+
+def F(n, d=None) -> Fraction:
+    """
+    Atajo para crear fracciones rápidamente en las pruebas.
+    
+    Uso:
+        F(3)      → Fraction(3, 1)
+        F(1, 2)   → Fraction(1, 2)
+        F("0.5")  → Fraction(1, 2)
+    """
+    if d is None:
+        return Fraction(n)
+    return Fraction(n, d)
+
+
+def mat(*rows) -> Matrix:
+    """Construye una Matrix a partir de filas de números/fracciones."""
+    return tuple(tuple(F(x) for x in row) for row in rows)
+
+
+def vec(*values) -> Vector:
+    """Construye un Vector a partir de valores."""
+    return tuple(F(x) for x in values)
+
+
+# ============================================================================
+# Pruebas de identity_matrix
+# ============================================================================
+
+class TestIdentityMatrix(unittest.TestCase):
+    def test_identity_1x1(self):
+        self.assertEqual(identity_matrix(1), ((F(1),),))
+
+    def test_identity_3x3(self):
+        expected = mat([1, 0, 0], [0, 1, 0], [0, 0, 1])
+        self.assertEqual(identity_matrix(3), expected)
+
+    def test_identity_diagonal_is_one(self):
+        I = identity_matrix(5)
+        for i in range(5):
+            self.assertEqual(I[i][i], F(1))
+
+    def test_identity_off_diagonal_is_zero(self):
+        I = identity_matrix(4)
+        for i in range(4):
+            for j in range(4):
+                if i != j:
+                    self.assertEqual(I[i][j], F(0))
+
+
+# ============================================================================
+# Pruebas de matrix_multiply
+# ============================================================================
+
+class TestMatrixMultiply(unittest.TestCase):
+    def test_identity_times_matrix_is_matrix(self):
+        A = mat([1, 2], [3, 4])
+        I = identity_matrix(2)
+        self.assertEqual(matrix_multiply(I, A), A)
+        self.assertEqual(matrix_multiply(A, I), A)
+
+    def test_2x3_times_3x2(self):
+        A = mat([1, 2, 3], [4, 5, 6])
+        B = mat([7, 8], [9, 10], [11, 12])
+        result = matrix_multiply(A, B)
+        # Fila 1: 1*7+2*9+3*11=58, 1*8+2*10+3*12=64
+        # Fila 2: 4*7+5*9+6*11=139, 4*8+5*10+6*12=154
+        expected = mat([58, 64], [139, 154])
+        self.assertEqual(result, expected)
+
+    def test_with_fractions(self):
+        A = mat([F(1, 2), F(1, 3)], [F(1, 4), F(1, 5)])
+        B = mat([F(6), F(0)], [F(0), F(15)])
+        result = matrix_multiply(A, B)
+        expected = mat([F(3), F(5)], [F(3, 2), F(3)])
+        self.assertEqual(result, expected)
+
+    def test_dimension_mismatch_raises(self):
+        A = mat([1, 2], [3, 4])
+        B = mat([1, 2, 3])
+        with self.assertRaises(ValueError):
+            matrix_multiply(A, B)
+
+    def test_exactness_no_rounding(self):
+        """Verifica que 1/3 * 3 = 1 exacto, no 0.9999..."""
+        A = mat([F(1, 3)])
+        B = mat([F(3)])
+        result = matrix_multiply(A, B)
+        self.assertEqual(result, ((F(1),),))
+
+
+# ============================================================================
+# Pruebas de matrix_vector_multiply
+# ============================================================================
+
+class TestMatrixVectorMultiply(unittest.TestCase):
+    def test_identity_times_vector(self):
+        I = identity_matrix(3)
+        v = vec(1, 2, 3)
+        self.assertEqual(matrix_vector_multiply(I, v), v)
+
+    def test_2x3_times_vector_3(self):
+        A = mat([1, 2, 3], [4, 5, 6])
+        v = vec(1, 1, 1)
+        result = matrix_vector_multiply(A, v)
+        self.assertEqual(result, vec(6, 15))
+
+    def test_with_fractions(self):
+        A = mat([F(1, 2), F(1, 4)], [F(1, 3), F(1, 6)])
+        v = vec(2, 4)
+        # Fila 1: 1/2*2 + 1/4*4 = 1 + 1 = 2
+        # Fila 2: 1/3*2 + 1/6*4 = 2/3 + 2/3 = 4/3
+        expected = vec(2, F(4, 3))
+        self.assertEqual(matrix_vector_multiply(A, v), expected)
+
+    def test_dimension_mismatch_raises(self):
+        A = mat([1, 2], [3, 4])
+        v = vec(1, 2, 3)
+        with self.assertRaises(ValueError):
+            matrix_vector_multiply(A, v)
+
+
+# ============================================================================
+# Pruebas de pivot_matrix (la operación más crítica del Símplex)
+# ============================================================================
+
+class TestPivotMatrix(unittest.TestCase):
+    def test_pivot_makes_pivot_element_one(self):
+        M = mat([2, 4], [6, 8])
+        result = pivot_matrix(M, 0, 0)
+        self.assertEqual(result[0][0], F(1))
+
+    def test_pivot_makes_rest_of_column_zero(self):
+        M = mat([2, 4], [6, 8])
+        result = pivot_matrix(M, 0, 0)
+        self.assertEqual(result[1][0], F(0))
+
+    def test_pivot_preserves_other_columns(self):
+        # Tableau típico del Símplex: pivote en (0, 0)
+        M = mat([1, 2, 3, 10],
+                [0, 1, 4, 20],
+                [0, 0, 1, 30])
+        result = pivot_matrix(M, 1, 1)
+        # Fila 1 queda [0, 1, 4, 20]
+        # Fila 0: [1, 2-2*1, 3-2*4, 10-2*20] = [1, 0, -5, -30]
+        # Fila 2: [0, 0-0*1, 1-0*4, 30-0*20] = [0, 0, 1, 30]
+        expected = mat([1, 0, -5, -30],
+                       [0, 1, 4, 20],
+                       [0, 0, 1, 30])
+        self.assertEqual(result, expected)
+
+    def test_pivot_with_fractions_exact(self):
+        """Caso real del Símplex: pivote 1/6 debe dar 1, y el resto 0 exacto."""
+        M = mat([F(1, 6), F(0)],
+                [F(1, 3), F(1)])
+        result = pivot_matrix(M, 0, 0)
+        # Fila 0: [1, 0]
+        # Fila 1: [1/3 - 1/3*1, 1 - 1/3*0] = [0, 1]
+        expected = mat([1, 0], [0, 1])
+        self.assertEqual(result, expected)
+
+    def test_pivot_zero_raises(self):
+        M = mat([0, 1], [2, 3])
+        with self.assertRaises(ValueError):
+            pivot_matrix(M, 0, 0)
+
+    def test_pivot_idempotent_on_already_pivoted(self):
+        """Si ya está pivoteado, volver a pivotar no cambia nada."""
+        M = mat([1, 2], [0, 3])
+        result = pivot_matrix(M, 0, 0)
+        self.assertEqual(result, M)
+
+
+# ============================================================================
+# Pruebas de invert_matrix
+# ============================================================================
+
+class TestInvertMatrix(unittest.TestCase):
+    def test_inverse_of_identity_is_identity(self):
+        I = identity_matrix(3)
+        self.assertEqual(invert_matrix(I), I)
+
+    def test_inverse_2x2(self):
+        # A = [[1, 2], [3, 4]]
+        # A⁻¹ = [[-2, 1], [3/2, -1/2]]
+        A = mat([1, 2], [3, 4])
+        A_inv = invert_matrix(A)
+        expected = mat([-2, 1], [F(3, 2), F(-1, 2)])
+        self.assertEqual(A_inv, expected)
+
+    def test_B_times_B_inverse_is_identity(self):
+        """Propiedad matemática fundamental para HU-07."""
+        B = mat([2, 1, 0],
+                [1, 3, 1],
+                [0, 2, 4])
+        B_inv = invert_matrix(B)
+        product = matrix_multiply(B, B_inv)
+        expected = identity_matrix(3)
+        self.assertEqual(product, expected)
+
+    def test_B_inverse_times_B_is_identity(self):
+        B = mat([1, 2, 3],
+                [0, 1, 4],
+                [5, 6, 0])
+        B_inv = invert_matrix(B)
+        product = matrix_multiply(B_inv, B)
+        self.assertEqual(product, identity_matrix(3))
+
+    def test_singular_matrix_raises(self):
+        # Matriz con filas linealmente dependientes
+        M = mat([1, 2], [2, 4])
+        with self.assertRaises(ValueError):
+            invert_matrix(M)
+
+    def test_non_square_raises(self):
+        M = mat([1, 2, 3], [4, 5, 6])
+        with self.assertRaises(ValueError):
+            invert_matrix(M)
+
+    def test_inverse_with_fractions(self):
+        """Matriz con fracciones, como las que aparecen en el Símplex Revisado."""
+        B = mat([F(1, 2), F(0)],
+                [F(1, 4), F(1)])
+        B_inv = invert_matrix(B)
+        # B⁻¹ = [[2, 0], [-1/2, 1]]
+        expected = mat([2, 0], [F(-1, 2), 1])
+        self.assertEqual(B_inv, expected)
+        # Verificar B·B⁻¹ = I
+        self.assertEqual(matrix_multiply(B, B_inv), identity_matrix(2))
+
+
+# ============================================================================
+# Pruebas de transpose, get_column, get_row
+# ============================================================================
+
+class TestTranspose(unittest.TestCase):
+    def test_transpose_2x3(self):
+        M = mat([1, 2, 3], [4, 5, 6])
+        expected = mat([1, 4], [2, 5], [3, 6])
+        self.assertEqual(transpose(M), expected)
+
+    def test_transpose_square_symmetric(self):
+        M = mat([1, 2], [2, 3])
+        self.assertEqual(transpose(M), M)
+
+    def test_transpose_empty(self):
+        self.assertEqual(transpose(tuple()), tuple())
+
+    def test_double_transpose_is_identity(self):
+        M = mat([1, 2, 3], [4, 5, 6])
+        self.assertEqual(transpose(transpose(M)), M)
+
+
+class TestGetters(unittest.TestCase):
+    def test_get_column(self):
+        M = mat([1, 2, 3], [4, 5, 6])
+        self.assertEqual(get_column(M, 1), vec(2, 5))
+
+    def test_get_row(self):
+        M = mat([1, 2, 3], [4, 5, 6])
+        self.assertEqual(get_row(M, 0), vec(1, 2, 3))
+
+
+# ============================================================================
+# Pruebas de inmutabilidad (principio arquitectónico clave)
+# ============================================================================
+
+class TestImmutability(unittest.TestCase):
+    def test_pivot_does_not_modify_input(self):
+        M = mat([2, 4], [6, 8])
+        original = M
+        pivot_matrix(M, 0, 0)
+        self.assertIs(M, original)
+        self.assertEqual(M, original)
+
+    def test_invert_does_not_modify_input(self):
+        M = mat([1, 2], [3, 4])
+        original = M
+        invert_matrix(M)
+        self.assertEqual(M, original)
+
+    def test_multiply_does_not_modify_inputs(self):
+        A = mat([1, 2], [3, 4])
+        B = mat([5, 6], [7, 8])
+        original_A = A
+        original_B = B
+        matrix_multiply(A, B)
+        self.assertEqual(A, original_A)
+        self.assertEqual(B, original_B)
+
+
+# ============================================================================
+# Prueba de integración: pivoteo como en el Símplex del problema Wyndor
+# ============================================================================
+
+class TestSimplexIntegration(unittest.TestCase):
+    def test_wyndor_first_pivot(self):
+        """
+        Problema Wyndor: Max 3x1 + 5x2
+        s.t. x1 ≤ 4, 2x2 ≤ 12, 3x1+2x2 ≤ 18
+        
+        Forma estándar con holguras:
+        x1 + S1 = 4
+        2x2 + S2 = 12
+        3x1 + 2x2 + S3 = 18
+        
+        Tableau inicial (solo la parte de restricciones, sin fila 0):
+        [1, 0, 1, 0, 0 | 4]
+        [0, 2, 0, 1, 0 | 12]
+        [3, 2, 0, 0, 1 | 18]
+        
+        Pivote en columna x2 (col 1), fila S2 (row 1), pivote = 2
+        """
+        tableau = mat([1, 0, 1, 0, 0, 4],
+                      [0, 2, 0, 1, 0, 12],
+                      [3, 2, 0, 0, 1, 18])
+        
+        result = pivot_matrix(tableau, pivot_row=1, pivot_col=1)
+        
+        # Fila 1 (pivote): [0, 1, 0, 1/2, 0, 6]
+        self.assertEqual(result[1], vec(0, 1, 0, F(1, 2), 0, 6))
+        
+        # Fila 0: no cambia en columna 1 (ya era 0)
+        self.assertEqual(result[0], vec(1, 0, 1, 0, 0, 4))
+        
+        # Fila 2: [3, 2-2*1, 0-2*0, 0-2*1/2, 1-2*0, 18-2*6] = [3, 0, 0, -1, 1, 6]
+        self.assertEqual(result[2], vec(3, 0, 0, -1, 1, 6))
+
+
+# ============================================================================
+# Ejecución
+# ============================================================================
+
+if __name__ == "__main__":
+    unittest.main()
+</file>
+
+<file path="tests/domain/test_lp_model.py">
+import unittest
+from fractions import Fraction
+
+from src.domain.model.enums import OptimizationSense, Relation
+from src.domain.model.lp_model import build_model
+
+
+class TestLPModel(unittest.TestCase):
+    def test_build_wyndor_model(self):
+        """Construye el modelo Wyndor correctamente."""
+        model = build_model(
+            sense=OptimizationSense.MAXIMIZE,
+            objective=[3, 5],
+            constraints_data=[
+                {"coefficients": [1, 0], "relation": "<=", "rhs": 4},
+                {"coefficients": [0, 2], "relation": "<=", "rhs": 12},
+                {"coefficients": [3, 2], "relation": "<=", "rhs": 18},
+            ],
+        )
+
+        self.assertEqual(model.sense, OptimizationSense.MAXIMIZE)
+        self.assertEqual(model.n_variables, 2)
+        self.assertEqual(model.n_constraints, 3)
+        self.assertEqual(model.objective, (Fraction(3), Fraction(5)))
+        self.assertEqual(model.constraints[0].relation, Relation.LESS_EQUAL)
+        self.assertEqual(model.constraints[0].rhs, Fraction(4))
+
+    def test_build_model_with_strings_and_fractions(self):
+        """Convierte strings a Fraction correctamente."""
+        model = build_model(
+            sense="max",
+            objective=["3/2", "0,5"],
+            constraints_data=[
+                {
+                    "coefficients": ["1.5", "-2"],
+                    "relation": ">=",
+                    "rhs": "4",
+                }
+            ],
+        )
+
+        self.assertEqual(model.objective[0], Fraction(3, 2))
+        self.assertEqual(model.objective[1], Fraction(1, 2))
+        self.assertEqual(model.constraints[0].coefficients[0], Fraction(3, 2))
+        self.assertEqual(model.constraints[0].relation, Relation.GREAT_EQUAL)
+
+    def test_model_is_immutable(self):
+        """El modelo no puede modificarse después de creado."""
+        model = build_model(
+            sense="max",
+            objective=[1, 2],
+            constraints_data=[
+                {"coefficients": [1, 1], "relation": "<=", "rhs": 10}
+            ],
+        )
+
+        with self.assertRaises(AttributeError):
+            model.sense = OptimizationSense.MINIMIZE  # type: ignore
+
+    def test_constraint_is_immutable(self):
+        """Las restricciones no pueden modificarse después de creadas."""
+        model = build_model(
+            sense="max",
+            objective=[1, 2],
+            constraints_data=[
+                {"coefficients": [1, 1], "relation": "<=", "rhs": 10}
+            ],
+        )
+
+        with self.assertRaises(AttributeError):
+            model.constraints[0].rhs = Fraction(20)  # type: ignore
+
+    def test_empty_objective_raises(self):
+        """Falla si no hay coeficientes en la función objetivo."""
+        with self.assertRaises(ValueError):
+            build_model(
+                sense="max",
+                objective=[],
+                constraints_data=[
+                    {"coefficients": [1], "relation": "<=", "rhs": 10}
+                ],
+            )
+
+    def test_no_constraints_raises(self):
+        """Falla si no hay restricciones."""
+        with self.assertRaises(ValueError):
+            build_model(
+                sense="max",
+                objective=[1, 2],
+                constraints_data=[],
+            )
+
+    def test_dimension_mismatch_raises(self):
+        """Falla si una restricción tiene distinto número de coeficientes."""
+        with self.assertRaises(ValueError):
+            build_model(
+                sense="max",
+                objective=[1, 2],
+                constraints_data=[
+                    {"coefficients": [1], "relation": "<=", "rhs": 10}
+                ],
+            )
+
+    def test_invalid_relation_raises(self):
+        """Falla si la relación no es válida."""
+        with self.assertRaises(ValueError):
+            build_model(
+                sense="max",
+                objective=[1, 2],
+                constraints_data=[
+                    {"coefficients": [1, 1], "relation": "><", "rhs": 10}
+                ],
+            )
+
+    def test_non_numeric_coefficient_raises(self):
+        """Falla si un coeficiente no es numérico."""
+        with self.assertRaises(ValueError):
+            build_model(
+                sense="max",
+                objective=["abc", 2],
+                constraints_data=[
+                    {"coefficients": [1, 1], "relation": "<=", "rhs": 10}
+                ],
+            )
+
+    def test_float_is_rejected_to_preserve_exactness(self):
+        """No acepta float para preservar exactitud."""
+        with self.assertRaises(TypeError):
+            build_model(
+                sense="max",
+                objective=[0.5, 2],
+                constraints_data=[
+                    {"coefficients": [1, 1], "relation": "<=", "rhs": 10}
+                ],
+            )
+
+    def test_model_hash_is_stable(self):
+        """Dos modelos idénticos tienen el mismo hash."""
+        model_a = build_model(
+            sense="max",
+            objective=[3, 5],
+            constraints_data=[
+                {"coefficients": [1, 0], "relation": "<=", "rhs": 4}
+            ],
+        )
+
+        model_b = build_model(
+            sense="max",
+            objective=[3, 5],
+            constraints_data=[
+                {"coefficients": [1, 0], "relation": "<=", "rhs": 4}
+            ],
+        )
+
+        self.assertEqual(hash(model_a), hash(model_b))
+
+    def test_variable_names(self):
+        """Los nombres de variables son x1, x2, x3..."""
+        model = build_model(
+            sense="max",
+            objective=[1, 2, 3],
+            constraints_data=[
+                {"coefficients": [1, 1, 1], "relation": "<=", "rhs": 10}
+            ],
+        )
+
+        self.assertEqual(model.variable_name(0), "x1")
+        self.assertEqual(model.variable_name(1), "x2")
+        self.assertEqual(model.variable_name(2), "x3")
+
+    def test_constraint_names(self):
+        """Los nombres de restricciones son R1, R2, R3..."""
+        model = build_model(
+            sense="max",
+            objective=[1, 2],
+            constraints_data=[
+                {"coefficients": [1, 1], "relation": "<=", "rhs": 10},
+                {"coefficients": [2, 2], "relation": "<=", "rhs": 20},
+            ],
+        )
+
+        self.assertEqual(model.constraint_name(0), "R1")
+        self.assertEqual(model.constraint_name(1), "R2")
+
+
+if __name__ == "__main__":
+    unittest.main()
+</file>
+
+<file path="tests/domain/test_parsing.py">
+import unittest
+from fractions import Fraction
+
+from src.domain.model.enums import OptimizationSense, Relation
+from src.domain.model.lp_model import Constraint, LPModel
+from src.domain.validation.parsing import (
+    MAX_CONSTRAINTS,
+    MAX_VARIABLES,
+    _build_model,
+    _collect_form_shape_errors,
+    _collect_numeric_errors,
+    _collect_option_errors,
+    _collect_size_errors,
+    _parse_relation,
+    _parse_sense,
+    _to_fraction,
+    validate_model_form,
+)
+
+class TestParsing(unittest.TestCase):
+    def test_to_fraction_accepts_supported_number_formats(self):
+        """Convierte a Fraction enteros, decimales y fracciones."""
+        cases = [
+            ("3", Fraction(3)),
+            ("-2", Fraction(-2)),
+            ("1.5", Fraction(3, 2)),
+            ("1,5", Fraction(3, 2)),
+            ("3/2", Fraction(3, 2)),
+        ]
+
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(_to_fraction(text), expected)
+
+    def test_to_fraction_rejects_invalid_text(self):
+        """Rechaza texto vacío, formatos inválidos y denominador cero."""
+        invalid_values = ["", "   ", "abc", "3/", "1/0"]
+
+        for text in invalid_values:
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError):
+                    _to_fraction(text)
+
+    def test_collect_numeric_errors_reports_and_accumulates_errors(self):
+        """Ubica y recopila varios errores numéricos del formulario."""
+        form = {
+        "n_variables": 2,
+        "objective": ["abc", "5"], # Error en los coef de la F.O
+        "constraints": [
+            # Error en x2 con xyz
+            {"x1": "1", "x2": "xyz", "rel": "<=", "rhs": "10"},
+            # Error en rhs con ""
+            {"x1": "2", "x2": "0", "rel": ">=", "rhs": ""},
+        ],
+        }
+
+        errors = _collect_numeric_errors(form=form)
+        self.assertEqual(len(errors), 3)
+        self.assertEqual(errors,
+            [
+            "Error en función objetivo, coeficiente de x1: 'abc' no es un número válido.",
+            "Error en restricción 1, coeficiente de x2: 'xyz' no es un número válido.",
+            "Error en restricción 2, lado derecho: Celda vacía: se esperaba un número.",
+            ],
+        )
+
+    def test_collect_size_errors_accepts_valid_size(self):
+        """Acepta un modelo dentro de los límites."""
+    
+        form = {
+            "n_variables": 2,
+            "objective": ["3", "5"],
+            "constraints": [
+                {"x1": "1", "x2": "0", "rel": "<=", "rhs": "4"},
+            ],
+        }
+
+        self.assertEqual(_collect_size_errors(form), [])
+
+    def test_collect_size_errors_reports_invalid_sizes_and_dimensions(self):
+        """Reporta límites excedidos, ausencia de restricciones y dimensiones incorrectas."""
+        cases = [
+            (
+                "sin variables",
+                {
+                    "n_variables": 0,
+                    "objective": [],
+                    "constraints": [{"x1": "1"}],
+                },
+                ["El modelo debe tener al menos una variable."],
+            ),
+            (
+                "sin restricciones",
+                {
+                    "n_variables": 1,
+                    "objective": ["1"],
+                    "constraints": [],
+                },
+                ["El modelo debe tener al menos una restricción."],
+            ),
+            (
+                "exceso de variables",
+                {
+                    "n_variables": MAX_VARIABLES + 1,
+                    "objective": ["1"] * (MAX_VARIABLES + 1),
+                    "constraints": [{}],
+                },
+                [f"El modelo no puede exceder {MAX_VARIABLES} variables."],
+            ),
+            (
+                "exceso de restricciones",
+                {
+                    "n_variables": 1,
+                    "objective": ["1"],
+                    "constraints": [{}] * (MAX_CONSTRAINTS + 1),
+                },
+                [f"El modelo no puede exceder {MAX_CONSTRAINTS} restricciones."],
+            ),
+            (
+                "dimensión del objetivo incorrecta",
+                {
+                    "n_variables": 2,
+                    "objective": ["1"],
+                    "constraints": [{}],
+                },
+                [
+                    "La función objetivo tiene 1 coeficientes, "
+                    "pero el modelo declara 2 variables."
+                ],
+            ),
+        ]
+
+        for name, form, expected_errors in cases:
+            with self.subTest(case=name):
+                self.assertEqual(_collect_size_errors(form), expected_errors)
+
+    def test_collect_form_shape_errors_accepts_valid_form(self):
+        """Acepta un formulario con estructura correcta."""
+        form = {
+            "sense": "max",
+            "n_variables": 2,
+            "objective": ["3", "5"],
+            "constraints": [
+                {"x1": "1", "x2": "0", "rel": "<=", "rhs": "4"},
+            ],
+        }
+
+        self.assertEqual(_collect_form_shape_errors(form), [])
+
+    def test_collect_form_shape_errors_reports_invalid_forms(self):
+        """Reporta tipos incorrectos y campos requeridos ausentes."""
+        cases = [
+            (
+                "formulario no es diccionario",
+                [],
+                ["El formulario debe ser un diccionario."],
+            ),
+            (
+                "faltan campos",
+                {},
+                [
+                    "Falta el campo 'sense'.",
+                    "Falta el campo 'n_variables'.",
+                    "Falta el campo 'objective'.",
+                    "Falta el campo 'constraints'.",
+                ],
+            ),
+            (
+                "faltan campos de restricción",
+                {
+                    "sense": "max",
+                    "n_variables": 1,
+                    "objective": ["1"],
+                    "constraints": [{}],
+                },
+                [
+                    "Falta el coeficiente de x1 en la restricción 1.",
+                    "Falta la relación en la restricción 1.",
+                    "Falta el lado derecho en la restricción 1.",
+                ],
+            ),
+            (
+                "tipos incorrectos",
+                {
+                    "sense": 1,
+                    "n_variables": True,
+                    "objective": "1",
+                    "constraints": [
+                        {"x1": 1, "rel": 2, "rhs": 3},
+                    ],
+                },
+                [
+                    "El campo 'sense' debe ser texto.",
+                    "El campo 'n_variables' debe ser un entero.",
+                    "El campo 'objective' debe ser una lista.",
+                    "El coeficiente de x1 en la restricción 1 debe ser texto.",
+                    "La relación en la restricción 1 debe ser texto.",
+                    "El lado derecho de la restricción 1 debe ser texto.",
+                ],
+            ),
+        ]
+
+        for name, form, expected_errors in cases:
+            with self.subTest(case=name):
+                self.assertEqual(
+                    _collect_form_shape_errors(form),
+                    expected_errors,
+                )
+
+    def test_parse_sense_accepts_valid_values(self):
+        """Convierte los sentidos de optimización admitidos."""
+        cases = [
+            ("max", OptimizationSense.MAXIMIZE),
+            (" MAXIMIZE ", OptimizationSense.MAXIMIZE),
+            ("Maximizar", OptimizationSense.MAXIMIZE),
+            ("min", OptimizationSense.MINIMIZE),
+            (" MINIMIZE ", OptimizationSense.MINIMIZE),
+            ("Minimizar", OptimizationSense.MINIMIZE),
+            (OptimizationSense.MAXIMIZE, OptimizationSense.MAXIMIZE),
+            (OptimizationSense.MINIMIZE, OptimizationSense.MINIMIZE),
+        ]
+
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(_parse_sense(value), expected)
+
+    def test_parse_sense_rejects_invalid_value(self):
+        """Rechaza un sentido de optimización inválido."""
+        cases = [
+            ("average", "Sentido de optimización no válido: average"),
+            ("", "Sentido de optimización no válido: "),
+        ]
+
+        for value, expected_message in cases:
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError) as context:
+                    _parse_sense(value)
+
+                self.assertEqual(str(context.exception), expected_message)
+
+    def test_parse_relation_accepts_valid_values(self):
+        """Convierte las relaciones admitidas."""
+        cases = [
+            ("<=", Relation.LESS_EQUAL),
+            ("≤", Relation.LESS_EQUAL),
+            (" LE ", Relation.LESS_EQUAL),
+            (">=", Relation.GREAT_EQUAL),
+            ("≥", Relation.GREAT_EQUAL),
+            (" GE ", Relation.GREAT_EQUAL),
+            ("=", Relation.EQUAL),
+            ("==", Relation.EQUAL),
+            (" EQ ", Relation.EQUAL),
+            (Relation.LESS_EQUAL, Relation.LESS_EQUAL),
+            (Relation.GREAT_EQUAL, Relation.GREAT_EQUAL),
+            (Relation.EQUAL, Relation.EQUAL),
+        ]
+
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(_parse_relation(value), expected)
+
+    def test_parse_relation_rejects_invalid_value(self):
+        """Rechaza una relación inválida."""
+        cases = [
+            ("!=", "Relación no válida: !="),
+            ("", "Relación no válida: "),
+        ]
+
+        for value, expected_message in cases:
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError) as context:
+                    _parse_relation(value)
+
+                self.assertEqual(str(context.exception), expected_message)
+
+    def test_collect_option_errors_reports_invalid_options(self):
+        """Recopila errores de sentido y relaciones con su ubicación."""
+        form = {
+            "sense": "average",
+            "constraints": [
+                {"rel": "!="},
+                {"rel": "<="},
+                {"rel": "<"},
+            ],
+        }
+
+        self.assertEqual(
+            _collect_option_errors(form),
+            [
+                "Sentido de optimización no válido: average",
+                "Restricción 1: Relación no válida: !=",
+                "Restricción 3: Relación no válida: <",
+            ],
+        )
+
+    def test_build_model_creates_model_with_fraction_values(self):
+        """Construye el modelo y convierte sus datos a Fraction."""
+        model = _build_model(
+            sense="max",
+            objective=["1.5", "-2"],
+            constraints_data=[
+                {
+                    "coefficients": ["3/2", "0"],
+                    "relation": "<=",
+                    "rhs": "4.25",
+                },
+            ],
+        )
+
+        self.assertEqual(
+            model,
+            LPModel(
+                sense=OptimizationSense.MAXIMIZE,
+                objective=(Fraction(3, 2), Fraction(-2)),
+                constraints=(
+                    Constraint(
+                        coefficients=(Fraction(3, 2), Fraction(0)),
+                        relation=Relation.LESS_EQUAL,
+                        rhs=Fraction(17, 4),
+                        original_index=1,
+                    ),
+                ),
+                n_variables=2,
+            ),
+        )
+
+    def test_validate_model_form_returns_model_for_valid_form(self):
+        """Devuelve el modelo cuando el formulario es válido."""
+        form = {
+            "sense": "min",
+            "n_variables": 2,
+            "objective": ["1,5", "-2"],
+            "constraints": [
+                {"x1": "3/2", "x2": "0", "rel": "<=", "rhs": "4.25"},
+            ],
+        }
+
+        model, errors = validate_model_form(form)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            model,
+            LPModel(
+                sense=OptimizationSense.MINIMIZE,
+                objective=(Fraction(3, 2), Fraction(-2)),
+                constraints=(
+                    Constraint(
+                        coefficients=(Fraction(3, 2), Fraction(0)),
+                        relation=Relation.LESS_EQUAL,
+                        rhs=Fraction(17, 4),
+                        original_index=1,
+                    ),
+                ),
+                n_variables=2,
+            ),
+        )
+
+    def test_validate_model_form_returns_errors_for_invalid_form(self):
+        """Devuelve errores y ningún modelo cuando el formulario es inválido."""
+        form = {
+            "sense": "average",
+            "n_variables": 1,
+            "objective": ["abc"],
+            "constraints": [
+                {"x1": "1", "rel": "!=", "rhs": "2"},
+            ],
+        }
+
+        model, errors = validate_model_form(form)
+
+        self.assertIsNone(model)
+        self.assertEqual(
+            errors,
+            [
+                "Error en función objetivo, coeficiente de x1: "
+                "'abc' no es un número válido.",
+                "Sentido de optimización no válido: average",
+                "Restricción 1: Relación no válida: !=",
+            ],
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
+</file>
+
+<file path="tests/domain/test_symbolic.py">
+"""
+Pruebas unitarias para ValorM (número simbólico a + bM).
+Ejecutar: python -m unittest tests/domain/test_symbolic.py -v
+"""
+import unittest
+from fractions import Fraction
+
+from src.domain.solver.symbolic import ValorM
+
+
+def F(n, d=None) -> Fraction:
+    if d is None:
+        return Fraction(n)
+    return Fraction(n, d)
+
+
+# ====================================================================== #
+#  Construcción y predicados
+# ====================================================================== #
+
+class TestConstruction(unittest.TestCase):
+    def test_default_is_zero(self):
+        v = ValorM()
+        self.assertEqual(v.constant, F(0))
+        self.assertEqual(v.m_coeff, F(0))
+        self.assertTrue(v.is_zero)
+
+    def test_from_int(self):
+        v = ValorM(5, 2)
+        self.assertEqual(v.constant, F(5))
+        self.assertEqual(v.m_coeff, F(2))
+
+    def test_from_fraction(self):
+        v = ValorM(F(1, 2), F(-3, 4))
+        self.assertEqual(v.constant, F(1, 2))
+        self.assertEqual(v.m_coeff, F(-3, 4))
+
+    def test_from_pure_number_valor_m(self):
+        # Pasar un ValorM puro como argumento debe funcionar
+        v = ValorM(ValorM(5), 3)
+        self.assertEqual(v.constant, F(5))
+        self.assertEqual(v.m_coeff, F(3))
+
+    def test_from_non_pure_valor_m_raises(self):
+        with self.assertRaises(ValueError):
+            ValorM(ValorM(1, 2), 3)  # El primer arg tiene M
+
+    def test_is_pure_number(self):
+        self.assertTrue(ValorM(5, 0).is_pure_number)
+        self.assertFalse(ValorM(5, 1).is_pure_number)
+
+    def test_to_fraction(self):
+        self.assertEqual(ValorM(5, 0).to_fraction(), F(5))
+        with self.assertRaises(ValueError):
+            ValorM(5, 1).to_fraction()
+
+
+# ====================================================================== #
+#  Operaciones aritméticas
+# ====================================================================== #
+
+class TestArithmetic(unittest.TestCase):
+    def test_add_two_valor_m(self):
+        a = ValorM(3, 2)    # 2M + 3
+        b = ValorM(5, -1)   # -M + 5
+        result = a + b      # M + 8
+        self.assertEqual(result, ValorM(8, 1))
+
+    def test_add_with_int(self):
+        v = ValorM(3, 2)
+        self.assertEqual(v + 5, ValorM(8, 2))
+        self.assertEqual(5 + v, ValorM(8, 2))  # reflexivo
+
+    def test_add_with_fraction(self):
+        v = ValorM(3, 2)
+        self.assertEqual(v + F(1, 2), ValorM(F(7, 2), 2))
+        self.assertEqual(F(1, 2) + v, ValorM(F(7, 2), 2))
+
+    def test_sub(self):
+        a = ValorM(3, 2)
+        b = ValorM(5, 1)
+        self.assertEqual(a - b, ValorM(-2, 1))
+        self.assertEqual(10 - a, ValorM(7, -2))
+
+    def test_neg(self):
+        v = ValorM(3, 2)
+        self.assertEqual(-v, ValorM(-3, -2))
+
+    def test_mul_by_scalar(self):
+        v = ValorM(3, 2)    # 2M + 3
+        self.assertEqual(v * 5, ValorM(15, 10))  # 10M + 15
+        self.assertEqual(5 * v, ValorM(15, 10))  # reflexivo
+        self.assertEqual(v * F(1, 2), ValorM(F(3, 2), 1))  # M + 3/2
+
+    def test_mul_two_valor_m_with_m_raises(self):
+        a = ValorM(1, 1)  # M + 1
+        b = ValorM(2, 1)  # M + 2
+        with self.assertRaises(ValueError):
+            a * b  # M² no soportado
+
+    def test_mul_pure_by_with_m(self):
+        # (5) * (M + 2) = 5M + 10
+        pure = ValorM(5, 0)
+        with_m = ValorM(2, 1)
+        self.assertEqual(pure * with_m, ValorM(10, 5))
+        self.assertEqual(with_m * pure, ValorM(10, 5))
+
+    def test_div_by_scalar(self):
+        v = ValorM(6, 4)    # 4M + 6
+        self.assertEqual(v / 2, ValorM(3, 2))  # 2M + 3
+        self.assertEqual(v / F(1, 2), ValorM(12, 8))
+
+    def test_div_by_zero_raises(self):
+        with self.assertRaises(ZeroDivisionError):
+            ValorM(1, 1) / 0
+
+    def test_div_by_valor_m_with_m_raises(self):
+        with self.assertRaises(ValueError):
+            ValorM(1, 1) / ValorM(1, 1)
+
+    def test_rtruediv_pure(self):
+        # 10 / (2) = 5
+        v = ValorM(2, 0)
+        self.assertEqual(10 / v, ValorM(5, 0))
+
+    def test_rtruediv_with_m_raises(self):
+        with self.assertRaises(ValueError):
+            10 / ValorM(2, 1)
+
+
+# ====================================================================== #
+#  Comparaciones (M primero, luego parte numérica)
+# ====================================================================== #
+
+class TestComparison(unittest.TestCase):
+    def test_m_coeff_dominates(self):
+        # 2M + 100 > 100M + 0? NO. 2M < 100M.
+        a = ValorM(100, 2)    # 2M + 100
+        b = ValorM(0, 100)    # 100M
+        self.assertLess(a, b)
+
+    def test_same_m_coeff_compares_constant(self):
+    # -5/3 M + 11/6 vs -5/3 M + 7/3
+    # Mismo coef de M (-5/3), entonces gana el menor constant: 7/3 < 11/6
+        a = ValorM(F(11, 6), F(-5, 3))
+        b = ValorM(F(7, 3), F(-5, 3))
+        self.assertLess(a,b)
+
+    def test_negative_m_is_less_than_positive(self):
+        # -M < M
+        self.assertLess(ValorM(0, -1), ValorM(0, 1))
+
+    def test_negative_m_is_less_than_any_pure_number(self):
+        # 10 - M < 3 (porque -M domina)
+        self.assertLess(ValorM(10, -1), ValorM(3, 0))
+
+    def test_positive_m_is_greater_than_any_pure_number(self):
+        # 2M > 1000
+        self.assertGreater(ValorM(0, 2), ValorM(1000, 0))
+
+    def test_equality(self):
+        self.assertEqual(ValorM(3, 2), ValorM(3, 2))
+        self.assertNotEqual(ValorM(3, 2), ValorM(4, 2))
+        self.assertNotEqual(ValorM(3, 2), ValorM(3, 3))
+
+    def test_equality_with_fraction(self):
+        # ValorM(5, 0) == 5
+        self.assertEqual(ValorM(5, 0), 5)
+        self.assertEqual(ValorM(5, 0), F(5))
+        self.assertNotEqual(ValorM(5, 1), 5)
+
+    def test_ordering_with_fraction(self):
+        # 2M + 3 > 100
+        self.assertGreater(ValorM(3, 2), 100)
+        # -M + 5 < 0
+        self.assertLess(ValorM(5, -1), 0)
+
+    def test_hash_consistent_with_equality(self):
+        a = ValorM(3, 2)
+        b = ValorM(3, 2)
+        self.assertEqual(hash(a), hash(b))
+        # Pueden usarse en sets/dicts
+        s = {a, b}
+        self.assertEqual(len(s), 1)
+
+
+# ====================================================================== #
+#  Formato (M siempre primero, según documento)
+# ====================================================================== #
+
+class TestFormatting(unittest.TestCase):
+    def test_zero(self):
+        self.assertEqual(str(ValorM(0, 0)), "0")
+
+    def test_pure_number_int(self):
+        self.assertEqual(str(ValorM(5, 0)), "5")
+        self.assertEqual(str(ValorM(-3, 0)), "-3")
+
+    def test_pure_number_fraction(self):
+        self.assertEqual(str(ValorM(F(3, 2), 0)), "3/2")
+        self.assertEqual(str(ValorM(F(-7, 4), 0)), "-7/4")
+
+    def test_m_only(self):
+        self.assertEqual(str(ValorM(0, 1)), "M")
+        self.assertEqual(str(ValorM(0, -1)), "-M")
+
+    def test_m_with_integer_coeff(self):
+        self.assertEqual(str(ValorM(0, 2)), "2M")
+        self.assertEqual(str(ValorM(0, -3)), "-3M")
+
+    def test_m_with_fraction_coeff(self):
+        # "-11/10 M" (del documento)
+        self.assertEqual(str(ValorM(0, F(-11, 10))), "-11/10 M")
+        self.assertEqual(str(ValorM(0, F(3, 4))), "3/4 M")
+
+    def test_m_plus_positive_constant(self):
+        # "2M + 3" (del documento)
+        self.assertEqual(str(ValorM(3, 2)), "2M + 3")
+        self.assertEqual(str(ValorM(F(2, 5), F(-11, 10))), "-11/10 M + 2/5")
+
+    def test_m_minus_negative_constant(self):
+        # "M - 5"
+        self.assertEqual(str(ValorM(-5, 1)), "M - 5")
+        self.assertEqual(str(ValorM(F(-3, 2), -1)), "-M - 3/2")
+
+    def test_m_with_fraction_constant(self):
+        self.assertEqual(str(ValorM(F(1, 2), 3)), "3M + 1/2")
+        self.assertEqual(str(ValorM(F(-1, 2), 3)), "3M - 1/2")
+
+
+# ====================================================================== #
+#  Inmutabilidad
+# ====================================================================== #
+
+class TestImmutability(unittest.TestCase):
+    def test_cannot_set_constant(self):
+        v = ValorM(3, 2)
+        with self.assertRaises(AttributeError):
+            v.constant = 5  # type: ignore
+
+    def test_cannot_set_m_coeff(self):
+        v = ValorM(3, 2)
+        with self.assertRaises(AttributeError):
+            v.m_coeff = 1  # type: ignore
+
+    def test_operations_return_new_instance(self):
+        a = ValorM(3, 2)
+        b = ValorM(5, 1)
+        c = a + b
+        self.assertIsNot(c, a)
+        self.assertIsNot(c, b)
+        # Los originales no cambiaron
+        self.assertEqual(a, ValorM(3, 2))
+        self.assertEqual(b, ValorM(5, 1))
+
+
+# ====================================================================== #
+#  Caso del documento: iteración 0 de minimización de Clase 10
+# ====================================================================== #
+
+class TestDocumentExample(unittest.TestCase):
+    def test_clase_10_iteracion_0_fila_0(self):
+        """
+        Del documento, HU-06 caso 6:
+        La fila 0 de la iteración 0 del ejemplo de minimización de clase
+        debe tener coeficientes como (-11/10 M + 2/5, -9/10 M + 1/2, 0, 0, M, 0).
+        
+        Verificamos que el formato coincide exactamente con el documento.
+        """
+        c1 = ValorM(F(2, 5), F(-11, 10))
+        c2 = ValorM(F(1, 2), F(-9, 10))
+        c5 = ValorM(0, 1)
+
+        self.assertEqual(str(c1), "-11/10 M + 2/5")
+        self.assertEqual(str(c2), "-9/10 M + 1/2")
+        self.assertEqual(str(c5), "M")
+
+        # El orden correcto: c1 < c2 porque -11/10 < -9/10
+        self.assertLess(c1, c2)
+
+
+# ====================================================================== #
+
+if __name__ == "__main__":
+    unittest.main()
+</file>
+
+<file path="tests/presentation/test_plot_view.py">
+"""Pruebas de la figura y la tabla del método gráfico (HU-04, caso 8 de 7.1)."""
+import unittest
+from fractions import Fraction as F
+
+from domain.model.enums import OptimizationSense
+from domain.solver.graphical_solver import GraphicalSolver
+from domain.validation.parsing import validate_model_form
+from presentation.components.plot_view import (
+    build_graphical_figure,
+    build_vertices_rows,
+    hidden_vertices_count,
+)
+from utils.formatting import DECIMAL_MODE, FRACTION_MODE
+
+
+def _result(sense, objective, rows):
+    form = {
+        "sense": sense,
+        "n_variables": len(objective),
+        "objective": list(objective),
+        "constraints": [
+            {
+                **{f"x{i + 1}": c for i, c in enumerate(coefficients)},
+                "rel": relation,
+                "rhs": rhs,
+            }
+            for coefficients, relation, rhs in rows
+        ],
+    }
+    model, errors = validate_model_form(form)
+    assert not errors
+    return model, GraphicalSolver().solve(model).graphical
+
+
+def _wyndor():
+    return _result("max", ["3", "5"], [
+        (["1", "0"], "<=", "4"),
+        (["0", "2"], "<=", "12"),
+        (["3", "2"], "<=", "18"),
+    ])
+
+
+def _red_traces(fig):
+    return [
+        t for t in fig.data
+        if getattr(t, "line", None) is not None and t.line.color == "red"
+    ]
+
+
+class TestGraphicalFigure(unittest.TestCase):
+    def test_isoutilidad_roja_unica_y_discontinua(self):
+        model, result = _wyndor()
+        fig = build_graphical_figure(
+            result, sense=model.sense, number_format=FRACTION_MODE
+        )
+        red = _red_traces(fig)
+        self.assertEqual(len(red), 1)
+        self.assertEqual(red[0].line.dash, "dash")
+        self.assertEqual(red[0].line.width, 2)
+        self.assertIn("Z = 36", red[0].name)
+
+    def test_isocosto_en_minimizacion(self):
+        model, result = _result("min", ["1", "2"], [(["1", "1"], ">=", "2")])
+        fig = build_graphical_figure(result, sense=model.sense)
+        self.assertIn("Isocosto", _red_traces(fig)[0].name)
+
+    def test_anotacion_z_por_cada_fev(self):
+        model, result = _wyndor()
+        fig = build_graphical_figure(result, sense=model.sense)
+        fev = [v for v in result.vertices if v.is_feasible]
+        z_annotations = [a for a in fig.layout.annotations if "Z =" in a.text]
+        self.assertEqual(len(z_annotations), len(fev))
+
+    def test_etiqueta_por_cada_restriccion(self):
+        model, result = _wyndor()
+        fig = build_graphical_figure(result, sense=model.sense)
+        texts = [a.text for a in fig.layout.annotations]
+        for label in ("R1", "R2", "R3"):
+            self.assertIn(f"<b>{label}</b>", texts)
+            self.assertTrue(any(t.name.startswith(f"{label}:") for t in fig.data))
+
+    def test_objetivo_constante_no_dibuja_isoutilidad(self):
+        model, result = _result("max", ["0", "0"], [
+            (["1", "0"], "<=", "1"),
+            (["0", "1"], "<=", "1"),
+        ])
+        fig = build_graphical_figure(result, sense=model.sense)
+        self.assertEqual(_red_traces(fig), [])
+
+    def test_no_factible_sin_region_pero_con_rectas(self):
+        model, result = _result("max", ["1", "1"], [
+            (["1", "1"], "<=", "2"),
+            (["1", "1"], ">=", "5"),
+        ])
+        fig = build_graphical_figure(result, sense=model.sense)
+        self.assertFalse(any(t.name.startswith("Región factible") for t in fig.data))
+        self.assertTrue(any(t.name.startswith("R1:") for t in fig.data))
+        self.assertEqual(_red_traces(fig), [])
+
+
+class TestVerticesTable(unittest.TestCase):
+    def test_tabla_lista_todos_los_vertices(self):
+        _, result = _wyndor()
+        rows = build_vertices_rows(result, FRACTION_MODE)
+        self.assertEqual(len(rows), 8)
+        self.assertEqual(sum(r["Tipo"].startswith("FEV") for r in rows), 5)
+        self.assertEqual(sum(r["Tipo"] == "No factible" for r in rows), 3)
+        self.assertTrue(all(r["Z"] == "—" for r in rows if r["Tipo"] == "No factible"))
+        self.assertEqual(sum(r["Tipo"] == "FEV (óptimo)" for r in rows), 1)
+
+    def test_formato_fraccion_y_decimal(self):
+        _, result = _result("max", ["2", "4"], [
+            (["1", "2"], "<=", "5"),
+            (["1", "1"], "<=", "4"),
+        ])
+        fraccion = build_vertices_rows(result, FRACTION_MODE)
+        decimal = build_vertices_rows(result, DECIMAL_MODE)
+        self.assertIn("5/2", [r["x₂"] for r in fraccion])
+        self.assertIn("2.5", [r["x₂"] for r in decimal])
+
+    def test_vertices_fuera_de_la_ventana(self):
+        _, result = _result("max", ["1", "1"], [
+            (["1", "-1"], "<=", "1"),
+            (["-1", "1"], "<=", "2"),
+        ])
+        # (0, -1) y (-2, 0) están en la tabla pero no en la gráfica.
+        self.assertEqual(hidden_vertices_count(result), 2)
+        self.assertEqual(len(build_vertices_rows(result, FRACTION_MODE)), 5)
+
+    def test_wyndor_no_oculta_vertices(self):
+        _, result = _wyndor()
+        self.assertEqual(hidden_vertices_count(result), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
+</file>
+
+<file path="tests/utils/test_examples.py">
+import unittest
+from fractions import Fraction
+
+from src.utils.examples import (
+    get_example,
+    list_public_examples,
+    list_all_examples,
+    PUBLIC_EXAMPLES,
+    RUBRIC_EXAMPLES,
+)
+
+
+class TestExamplesSeparation(unittest.TestCase):
+    """Verifica la separación arquitectónica entre ejemplos públicos y de rúbrica."""
+
+    def test_public_examples_do_not_include_rubric(self):
+        """Los ejemplos públicos NO deben tener key tipo 'rubrica_X'"""
+        for example in PUBLIC_EXAMPLES:
+            self.assertFalse(
+                example.key.startswith("rubrica_"),
+                f"El ejemplo público '{example.key}' no debería ser de rúbrica."
+            )
+
+    def test_rubric_examples_are_present(self):
+        """Los 7 ejemplos de rúbrica deben estar en RUBRIC_EXAMPLES para pruebas internas"""
+        rubric_keys = {ex.key for ex in RUBRIC_EXAMPLES}
+        for i in range(1, 8):
+            self.assertIn(f"rubrica_{i}", rubric_keys)
+
+    def test_all_examples_is_union(self):
+        """ALL_EXAMPLES debe ser la unión exacta de públicos y rúbrica"""
+        all_examples = list_all_examples()
+        self.assertEqual(
+            len(all_examples),
+            len(PUBLIC_EXAMPLES) + len(RUBRIC_EXAMPLES),
+        )
+
+    def test_public_examples_count(self):
+        """Debe haber exactamente 7 ejemplos públicos bien documentados"""
+        self.assertEqual(len(PUBLIC_EXAMPLES), 7)
+
+
+class TestPublicExamples(unittest.TestCase):
+    """Verifica que los ejemplos públicos se cargan y construyen correctamente"""
+
+    def test_wyndor_exact_values(self):
+        example = get_example("wyndor")
+        model = example.to_model()
+
+        self.assertEqual(model.n_variables, 2)
+        self.assertEqual(model.n_constraints, 3)
+        self.assertEqual(model.objective, (Fraction(3), Fraction(5)))
+        self.assertEqual(model.constraints[0].rhs, Fraction(4))
+        self.assertEqual(
+            model.constraints[1].coefficients,
+            (Fraction(0), Fraction(2)),
+        )
+
+    def test_min_dieta_is_minimization(self):
+        example = get_example("min_dieta")
+        model = example.to_model()
+        self.assertEqual(model.sense.value, "min")
+
+    def test_no_factible_wyndor_has_four_constraints(self):
+        model = get_example("no_factible_wyndor").to_model()
+        self.assertEqual(model.n_constraints, 4)
+
+    def test_no_acotado_wyndor_has_one_constraint(self):
+        model = get_example("no_acotado_wyndor").to_model()
+        self.assertEqual(model.n_constraints, 1)
+
+    def test_all_public_examples_have_description(self):
+        """CRÍTICO PARA UX: Cada ejemplo público debe tener descripción para el usuario"""
+        for example in PUBLIC_EXAMPLES:
+            self.assertTrue(
+                example.description.strip(),
+                f"El ejemplo público '{example.key}' no tiene descripción."
+            )
+
+    def test_all_public_examples_build_valid_model(self):
+        """Todos los ejemplos públicos deben construir un modelo válido sin lanzar excepciones"""
+        for example in PUBLIC_EXAMPLES:
+            with self.subTest(key=example.key):
+                model = example.to_model()
+                self.assertEqual(model.n_variables, len(example.objective))
+                self.assertEqual(model.n_constraints, len(example.constraints))
+
+
+class TestRubricExamples(unittest.TestCase):
+    """Verifica que los ejemplos de rúbrica siguen funcionando para las pruebas del equipo"""
+
+    def test_rubrica_1_exact_values(self):
+        model = get_example("rubrica_1").to_model()
+        self.assertEqual(model.objective, (Fraction(50), Fraction(80)))
+        self.assertEqual(
+            model.constraints[0].coefficients,
+            (Fraction(2), Fraction(1)),
+        )
+        self.assertEqual(model.constraints[0].rhs, Fraction(100))
+
+    def test_rubrica_2_has_negative_rhs(self):
+        model = get_example("rubrica_2").to_model()
+        self.assertEqual(model.constraints[2].rhs, Fraction(-4))
+
+    def test_rubrica_3_has_three_variables(self):
+        model = get_example("rubrica_3").to_model()
+        self.assertEqual(model.n_variables, 3)
+
+
+class TestGetExampleFunction(unittest.TestCase):
+    def test_unknown_example_raises(self):
+        with self.assertRaises(KeyError):
+            get_example("no_existe")
+
+    def test_can_get_rubric_example_by_key(self):
+        """Aunque no estén en la UI, los de rúbrica siguen accesibles por key"""
+        example = get_example("rubrica_1")
+        self.assertEqual(example.key, "rubrica_1")
+
+
+if __name__ == "__main__":
+    unittest.main()
+</file>
+
+<file path="requirements.txt">
+streamlit==1.66.1
+plotly==7.1.0
+</file>
+
+<file path="src/domain/model/lp_model.py">
+from dataclasses import dataclass
+from fractions import Fraction
+from typing import Any, Mapping, Sequence, Tuple
+
+from .enums import OptimizationSense, Relation
+
+
+@dataclass(frozen=True)
+class Constraint:
+    """
+    Restricción inmutable del modelo original del usuario
+
+    coefficients:
+        Un coeficiente por variable de decisión
+
+    relation:
+        LESS_EQUAL, GREAT_EQUAL o EQUAL
+
+    rhs:
+        Lado derecho.
+
+    original_index:
+        Índice 1-based de la restricción original
+        Permite mostrar R1, R2, R3...
+    """
+    coefficients: Tuple[Fraction, ...]
+    relation: Relation
+    rhs: Fraction
+    original_index: int
+
+    def __post_init__(self) -> None:
+        if not self.coefficients:
+            raise ValueError("Una restricción debe tener al menos un coeficiente.")
+        if self.original_index < 1:
+            raise ValueError("El índice original de la restricción debe ser >= 1.")
+
+
+@dataclass(frozen=True)
+class LPModel:
+    """
+    Modelo de Programación Lineal inmutable
+
+    Solo representa la estructura matemática
+    """
+    sense: OptimizationSense
+    objective: Tuple[Fraction, ...]
+    constraints: Tuple[Constraint, ...]
+    n_variables: int
+
+    def __post_init__(self) -> None:
+        if self.n_variables < 1:
+            raise ValueError("Debe existir al menos una variable de decisión.")
+
+        if len(self.objective) != self.n_variables:
+            raise ValueError(
+                "La función objetivo debe tener un coeficiente por variable."
+            )
+
+        if not self.constraints:
+            raise ValueError("Debe existir al menos una restricción.")
+
+        for constraint in self.constraints:
+            if len(constraint.coefficients) != self.n_variables:
+                raise ValueError(
+                    f"Restricción R{constraint.original_index}: "
+                    f"tiene {len(constraint.coefficients)} coeficientes, "
+                    f"pero el modelo tiene {self.n_variables} variables."
+                )
+
+    @property
+    def n_constraints(self) -> int:
+        return len(self.constraints)
+
+    def variable_name(self, index: int) -> str:
+        """
+        index es 0-based.
+        """
+        return f"x{index + 1}"
+
+    def constraint_name(self, index: int) -> str:
+        """
+        index es 0-based.
+        """
+        return f"R{index + 1}"
+
+# Funciones originales, se usan en tests y examples, pero se cambia en parsing.py
+def build_model(
+    sense: OptimizationSense | str,
+    objective: Sequence[Any],
+    constraints_data: Sequence[Mapping[str, Any]],
+) -> LPModel:
+    """
+    Construye un LPModel inmutable
+
+    Esta función verifica estructura:
+    - objetivo con coeficientes,
+    - restricciones existentes,
+    - dimensiones consistentes.
+
+    La validación semántica completa corresponde a HU-02:
+    - celdas vacías con ubicación exacta,
+    - máximo 20 variables,
+    - máximo 20 restricciones,
+    - mensajes por fila/columna,
+    - etc.
+
+    Nota:
+        Este parser exacto mínimo puede extraerse luego a
+        domain/validation/parsing.py cuando se implemente HU-02
+    """
+    parsed_sense = _parse_sense(sense)
+    parsed_objective = tuple(_to_fraction(value) for value in objective)
+    n_variables = len(parsed_objective)
+
+    constraints = tuple(
+        Constraint(
+            coefficients=tuple(
+                _to_fraction(value) for value in row["coefficients"]
+            ),
+            relation=_parse_relation(row["relation"]),
+            rhs=_to_fraction(row["rhs"]),
+            original_index=index + 1,
+        )
+        for index, row in enumerate(constraints_data)
+    )
+
+    return LPModel(
+        sense=parsed_sense,
+        objective=parsed_objective,
+        constraints=constraints,
+        n_variables=n_variables,
+    )
+
+
+def _parse_sense(value: OptimizationSense | str) -> OptimizationSense:
+    if isinstance(value, OptimizationSense):
+        return value
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("max", "maximize", "maximizar"):
+            return OptimizationSense.MAXIMIZE
+        if normalized in ("min", "minimize", "minimizar"):
+            return OptimizationSense.MINIMIZE
+
+    raise ValueError(f"Sentido de optimización no válido: {value}")
+
+
+def _parse_relation(value: Relation | str) -> Relation:
+    if isinstance(value, Relation):
+        return value
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+
+        if normalized in ("<=", "≤", "le"):
+            return Relation.LESS_EQUAL
+        if normalized in (">=", "≥", "ge"):
+            return Relation.GREAT_EQUAL
+        if normalized in ("=", "==", "eq"):
+            return Relation.EQUAL
+
+    raise ValueError(f"Relación no válida: {value}")
+
+
+def _to_fraction(value: Any) -> Fraction:
+    """
+    Convierte una entrada exacta a Fraction
+
+    Acepta:
+    - int
+    - Fraction
+    - str: "3", "-2", "3/2", "0.5", "0,5"
+
+    No acepta float para evitar errores binarios de precisión
+    """
+    if isinstance(value, Fraction):
+        return value
+
+    if isinstance(value, int) and not isinstance(value, bool):
+        return Fraction(value)
+
+    if isinstance(value, str):
+        text = value.strip().replace(",", ".")
+
+        if text == "":
+            raise ValueError("Celda vacía: se esperaba un número.")
+
+        try:
+            return Fraction(text)
+        except (ValueError, ZeroDivisionError) as error:
+            raise ValueError(f"'{value}' no es un número válido.") from error
+
+    raise TypeError(
+        f"Tipo no soportado para conversión exacta: {type(value).__name__}"
+    )
+</file>
+
+<file path="src/domain/solver/protocols.py">
+from typing import Protocol
+from ..model.lp_model import LPModel
+from .solution import Solution
+
+class Solver(Protocol):
+    def solve(self, model:LPModel) -> Solution:
+        """Resuelve el modelo y devuelve una secuencia inmutable de pasos y la solución."""
+        ...
+</file>
+
+<file path="src/domain/solver/solver_factory.py">
+from enum import Enum
+from .protocols import Solver
+from .graphical_solver import GraphicalSolver
+# from .big_m_simplex import BigMSimplexSolver (se implementará en Sprint 2)
+
+class SolverMethod(Enum):
+    GRAFICO = "grafico"
+    GRAN_M = "gran_m"
+    REVISADO = "revisado"
+    
+class SolverFactory:
+    @staticmethod
+    def create(method: SolverMethod) -> Solver:
+        if method == SolverMethod.GRAFICO:
+            return GraphicalSolver()
+        elif method == SolverMethod.GRAN_M:
+            # return BigMSimplexSolver()
+            raise NotImplementedError("Gran M en desarrollo")
+        elif method == SolverMethod.REVISADO:
+            # return RevisedSimplexSolver()
+            raise NotImplementedError("Revisado en desarrollo")
+        raise ValueError(f"Método desconocido: {method}")
+</file>
+
+<file path="src/domain/solver/step.py">
+from dataclasses import dataclass
+from fractions import Fraction
+from typing import Tuple, Optional, Any
+
+@dataclass(frozen=True)
+class PivotInfo:
+    row: int
+    column: int
+
+@dataclass(frozen=True)
+class Step:
+    iteration: int
+    row_labels: Tuple[str, ...]
+    column_labels: Tuple[str, ...]
+    tableau: Tuple[Tuple[Any, ...], ...]  # Any puede ser Fraction o ValorM
+    basic_variables: Tuple[str, ...]
+    ratios: Tuple[Optional[Fraction], ...]  # None si el coeficiente es <= 0
+    pivot: Optional[PivotInfo]
+    notes: Tuple[str, ...]
+    justification: str
+    # Campos específicos para Símplex Revisado (pueden ser None en Gran M, Solo se implementan si alcanza el tiempo)
+    basis_matrix: Optional[Tuple[Tuple[Fraction, ...], ...]] = None
+    inverse_basis: Optional[Tuple[Tuple[Fraction, ...], ...]] = None
+    cost_basic: Optional[Tuple[Any, ...]] = None
+    xb: Optional[Tuple[Fraction, ...]] = None
+    multipliers: Optional[Tuple[Any, ...]] = None
+</file>
+
+<file path="tests/__init__.py">
+"""Bootstrap de imports para las pruebas: agrega src/ al path."""
+import os
+import sys
+
+_SRC = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"
+)
+if _SRC not in sys.path:
+    sys.path.insert(0, _SRC)
+</file>
+
+<file path="tests/test_performance.py">
+"""
+Stress test de rendimiento actualizado para operaciones matriciales con fracciones.
+Objetivo del Sprint 0: Validar que un problema de 20x20 con 200 iteraciones
+se resuelva en menos de 2 segundos.
+"""
+import unittest
+import time
+import random
+from fractions import Fraction
+from src.domain.solver.linalg import (
+    Matrix,
+    pivot_matrix,
+    matrix_multiply,
+    invert_matrix,
+    identity_matrix,
+)
+from src.domain.solver.symbolic import ValorM
+
+
+def F(n, d=None) -> Fraction:
+    return Fraction(n) if d is None else Fraction(n, d)
+
+
+class TestPerformance(unittest.TestCase):
+    """Pruebas de rendimiento con los límites máximos del documento."""
+
+    def test_20x20_pivot_performance(self):
+        """
+        200 iteraciones de pivoteo en un tableau de 21×42
+        (1 fila FO + 20 restricciones | Z + 20 vars + 20 holguras/artificiales + RHS).
+        Debe completarse en un tiempo razonable (propuesta: < 10s).
+        """
+        rows = 21   # 1 FO + 20 restricciones
+        cols = 42   # Z + 20 vars + 20 holguras/artificiales + RHS
+        iterations = 200
+
+        # Construir tableau inicial con diagonal no nula
+        initial = [
+            [F(random.randint(1, 10)) for _ in range(cols)]
+            for _ in range(rows)
+        ]
+        current_matrix = tuple(tuple(row) for row in initial)
+
+        start = time.perf_counter()
+        for i in range(iterations):
+            pivot_row = (i % (rows - 1)) + 1  # evita fila 0 (FO)
+            pivot_col = (i % (cols - 1)) + 1
+            current_matrix = pivot_matrix(current_matrix, pivot_row, pivot_col)
+        elapsed = time.perf_counter() - start
+
+        print(f"\n⏱️ 200 pivoteos en tableau {rows}×{cols}: {elapsed:.4f}s")
+        self.assertLess(elapsed, 10.0,
+                        f"200 pivoteos en 21×42 tomó {elapsed:.4f}s (límite 10s)")
+
+    def test_20x20_revised_simplex_performance(self):
+        """
+        200 iteraciones de pivoteo sobre una base 20×20 (Revisado).
+        """
+        n = 20
+        iterations = 200
+
+        initial = [
+            [F(random.randint(1, 10)) for _ in range(n)]
+            for _ in range(n)
+        ]
+        current_matrix = tuple(tuple(row) for row in initial)
+
+        start = time.perf_counter()
+        for i in range(iterations):
+            pivot_row = i % n
+            pivot_col = i % n
+            if current_matrix[pivot_row][pivot_col] == 0:
+                for r in range(n):
+                    if current_matrix[r][pivot_col] != 0:
+                        pivot_row = r
+                        break
+            current_matrix = pivot_matrix(current_matrix, pivot_row, pivot_col)
+        elapsed = time.perf_counter() - start
+
+        print(f"\n⏱️ 200 iteraciones Revisado en matriz {n}×{n}: {elapsed:.4f}s")
+        self.assertLess(elapsed, 10.0,
+                        f"Revisado 20×20 tomó {elapsed:.4f}s (límite 10s)")
+
+    def test_20x20_matrix_inversion_performance(self):
+        """
+        Invertir una matriz 20×20 debe ser rápido (el Revisado lo hace
+        implícitamente en cada pivoteo, pero conviene medirlo aparte).
+        """
+        n = 20
+        # Matriz diagonalmente dominante → garantizamos que sea invertible
+        initial = [[F(0)] * n for _ in range(n)]
+        for i in range(n):
+            initial[i][i] = F(random.randint(5, 20))
+            for j in range(n):
+                if i != j:
+                    initial[i][j] = F(random.randint(0, 2))
+        matrix = tuple(tuple(row) for row in initial)
+
+        start = time.perf_counter()
+        inv = invert_matrix(matrix)
+        product = matrix_multiply(matrix, inv)
+        elapsed = time.perf_counter() - start
+
+        print(f"\n⏱️ Inversión + producto 20×20: {elapsed:.4f}s")
+        self.assertEqual(product, identity_matrix(n))
+        self.assertLess(elapsed, 5.0,
+                        f"Inversión 20×20 tomó {elapsed:.4f}s (límite 5s)")
+
+    def test_valorm_arithmetic_overhead(self):
+        """10,000 operaciones ValorM deben ser rápidas."""
+        start = time.perf_counter()
+        v1 = ValorM(F(2, 5), F(-11, 10))
+        v2 = ValorM(F(1, 2), F(-9, 10))
+        for _ in range(10_000):
+            _ = v1 + v2
+            _ = v1 * F(3)
+            _ = v1 < v2
+        elapsed = time.perf_counter() - start
+
+        print(f"\n⏱️ 10,000 operaciones ValorM: {elapsed:.4f}s")
+        self.assertLess(elapsed, 1.0,
+                        f"ValorM overhead: {elapsed:.4f}s (límite 1s)")
+
+
+if __name__ == "__main__":
+    unittest.main()
+</file>
+
+<file path="README.md">
+# Solver de Programación Lineal
+
+Aplicación interactiva para resolver problemas de **Programación Lineal (PL)** con visualización paso a paso del procedimiento de resolución.
+
+<div align="center">
+  <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/Streamlit-FF4B4B?style=flat&logo=streamlit&logoColor=white" alt="Streamlit">
+  <img src="https://img.shields.io/badge/Plotly-3F4F75?style=flat&logo=plotly&logoColor=white" alt="Plotly">
+</div>
+
+## Características
+
+- **Método Gráfico** (2 variables): visualización interactiva de la región factible, vértices y recta de isoutilidad.
+- **Método Símplex Gran M**: resolución algebraica completa para modelos con restricciones ≤, ≥ e =.
+- **Método Símplex Revisado** *(opcional, sujeto a disponibilidad)*: validación cruzada del Gran M mediante operaciones matriciales exactas.
+- **Aritmética exacta**: todos los cálculos se realizan con fracciones (`fractions.Fraction`), eliminando errores de redondeo.
+- **M simbólico**: el valor M del Gran M se trata como un símbolo algebraico (`a + bM`), no como un número arbitrariamente grande.
+- **Análisis de sensibilidad**: costos reducidos, precios sombra y rangos de optimalidad/factibilidad.
+- **Navegación interactiva**: avanza y retrocede entre las iteraciones del Símplex sin recalcular.
+- **Exportación**: descarga del procedimiento completo en un archivo de texto (.txt) generado en memoria.
+- **Ejemplos precargados**: problemas clásicos de clase (Wyndor, dieta, casos especiales como degeneración o no acotados).
+
+## Requisitos
+
+- **Python 3.10+**
+- Las dependencias se listan en `requirements.txt`:
+  - `streamlit` — interfaz gráfica
+  - `plotly` — gráficas interactivas 2D
+
+> **Nota**: Todo lo demás es **biblioteca estándar de Python** (`fractions`, `dataclasses`, `typing`, `enum`, `unittest`, `io`), cumpliendo con la restricción de mínimas dependencias externas.
+
+## Instalación
+
+1. Clona el repositorio:
+
+   ```bash
+   git clone <url-del-repositorio>
+   cd lp-solver-optimizacion
+   ```
+
+2. Crea y activa un entorno virtual:
+
+   ```bash
+   python -m venv .venv
+   # Windows (PowerShell)
+   .venv\Scripts\Activate.ps1
+   # Linux / macOS
+   source .venv/bin/activate
+   ```
+
+3. Instala las dependencias:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+## Ejecución
+
+### Aplicación Streamlit
+
+```bash
+streamlit run src/presentation/app.py
+```
+
+La aplicación se abrirá automáticamente en el navegador (por defecto en `http://localhost:8501`).
+
+### Pruebas unitarias
+
+```bash
+# Ejecutar todas las pruebas
+python -m unittest discover -s tests -v
+
+# Ejecutar un módulo específico
+python -m unittest tests/domain/test_linalg.py -v
+python -m unittest tests/domain/test_symbolic.py -v
+
+# Stress test de rendimiento
+python -m unittest tests/test_performance.py -v
+```
+
+## Estructura del proyecto
+
+```txt
+.
+├── src/
+│   ├── application/         # Casos de uso y orquestación
+│   │   ├── use_cases/       # validate_model, solve_lp, analyze_sensitivity, export_summary
+│   │   └── __init__.py
+│   ├── domain/              # Lógica de negocio pura (Python puro, sin dependencias externas)
+│   │   ├── model/           # LPModel, Constraint, ObjectiveFunction, Builder
+│   │   ├── sensitivity/     # SensitivityAnalyzer
+│   │   ├── solver/          # Protocol Solver, Gran M, Revisado, Gráfico, ValorM, linalg
+│   │   ├── validation/      # ModelValidator
+│   │   └── __init__.py
+│   ├── presentation/        # Interfaz Streamlit (única capa que conoce la UI)
+│   │   ├── components/      # Tableau, navegación, gráficas
+│   │   ├── tabs/            # Pestañas: modelo, resolver, sensibilidad, exportar
+│   │   ├── __init__.py
+│   │   └── app.py           # Punto de entrada de Streamlit
+│   ├── utils/               # Utilidades transversales (formateo, ejemplos precargados)
+│   └── __init__.py
+├── tests/                   # Pruebas unitarias y de rendimiento
+│   ├── application/
+│   ├── domain/
+│   ├── __init__.py
+│   └── test_performance.py
+├── .gitattributes
+├── .gitignore
+├── README.md
+└── requirements.txt
+```
+
+## Decisiones técnicas clave
+
+1. **Aritmética exacta con `fractions.Fraction`**: evita errores de redondeo y garantiza resultados reproducibles.
+2. **M simbólico (`ValorM`)**: representa `a + bM` sin usar un número grande.
+3. **Inmutabilidad total**: `@dataclass(frozen=True)` y tuplas en lugar de listas.
+4. **Iteraciones precalculadas**: el solver calcula todos los pasos de una vez, permitiendo navegación instantánea.
+5. **Operación en memoria**: no hay persistencia; el estado se maneja con `st.session_state`.
+
+## Estado del proyecto
+
+| Sprint | Estado | Entregable |
+|--------|--------|------------|
+| **Sprint 0** | Completado | Tipos de dominio, `ValorM`, `linalg`, esqueleto ejecutable, pruebas de rendimiento |
+| **Sprint 1** | En progreso | Modelo, validación, estado, método gráfico, navegación |
+| **Sprint 2** | Pendiente | Símplex Gran M, casos especiales, Símplex Revisado (Si hay tiempo) |
+| **Sprint 3** | Pendiente | Análisis de sensibilidad, exportación |
+
+## Equipo/Autores
+
+- **Camila Torres Chica**
+- **Daniel Sanchez Escobar**
+- **Jesica Estor Soto**
+
+## Referencias
+
+- Taha, H. A. (2017). *Investigación de Operaciones*. Pearson Educación.
+- Hillier, F. S., & Lieberman, G. J. (2010). *Introducción a la Investigación de Operaciones*. McGraw-Hill.
+- Martin, R. C. (2018). *Clean Architecture*. Prentice Hall.
+- Ortiz, R. A. *Investigación de Operaciones I* (diapositivas de clase, UdeA).
+
+---
+
+<div align="center">
+Proyecto académico — Optimización — Universidad de Antioquia.
+</div>
+</file>
+
+<file path="src/domain/solver/solution.py">
+from dataclasses import dataclass
+from enum import Enum
+from fractions import Fraction
+from typing import Tuple, Optional, Any
+
+from ..model.enums import Relation
+from .step import Step
+
+class SolutionStatus(Enum):
+    OPTIMA = "Óptima"
+    NO_FACTIBLE = "No Factible"
+    NO_ACOTADA = "No Acotada"
+    LIMITE_ITERACIONES = "Límite de Iteraciones Alcanzado"
+    ERROR = "Error Interno"
+
+@dataclass(frozen=True)
+class BasisInfo:
+    basic_variables: Tuple[str, ...]
+    basis_inverse: Tuple[Tuple[Fraction, ...], ...]
+    row_to_constraint: Tuple[int, ...]  # Índice de la restricción original
+    rhs_sign_flipped: Tuple[bool, ...]  # Si se multiplicó por -1
+    sense_factor: int  # 1 para Max, -1 para Min (para ajustar Z final)
+
+# Payload del método gráfico (solo lo produce GraphicalSolver)
+
+@dataclass(frozen=True)
+class GraphVertex:
+    point: Tuple[Fraction, Fraction]
+    is_feasible: bool
+    z_value: Fraction
+    
+@dataclass(frozen=True)
+class GraphLine:
+    label: str
+    coefficients: Tuple[Fraction, Fraction]
+    relation: Relation
+    rhs: Fraction
+    p1: Optional[Tuple[Fraction, Fraction]]
+    p2: Optional[Tuple[Fraction, Fraction]]
+    
+@dataclass(frozen=True)
+class GraphicalResult:
+    vertices: Tuple[GraphVertex, ...]
+    region_polygon: Tuple[Tuple[Fraction, Fraction], ...]
+    lines: Tuple[GraphLine, ...]
+    window: Tuple[Fraction, Fraction, Fraction, Fraction]  # xmin, xmax, ymin, ymax
+
+    # Todos los vértices óptimos detectados.
+    optimal_vertices: Tuple[Tuple[Fraction, Fraction], ...]
+
+    # Segmento óptimo entre extremos, solo si hay óptimos múltiples no constantes.
+    optimal_segment: Optional[
+        Tuple[Tuple[Fraction, Fraction], Tuple[Fraction, Fraction]]
+    ]
+
+    isoprofit_z: Optional[Fraction]
+    isoprofit_segment: Optional[
+        Tuple[Tuple[Fraction, Fraction], Tuple[Fraction, Fraction]]
+    ]
+
+    region_is_unbounded: bool
+    improving_directions: Tuple[Tuple[Fraction, Fraction], ...]
+
+@dataclass(frozen=True)
+class Solution:
+    status: SolutionStatus
+    values: Tuple[Tuple[str, Fraction], ...]  # (nombre_variable, valor)
+    optimal_value: Optional[Fraction]
+    slacks: Tuple[Fraction, ...] # Una fracción por restricción
+    alt_values: Tuple[Tuple[str, Fraction], ...] 
+    steps: Tuple[Step, ...]
+    notes: Tuple[str, ...]
+    message: str
+    basis_info: Optional[BasisInfo]
+    model_fingerprint: int  # Hash del modelo para invalidar en HU-05
+    # HU-04: None en stub, Gran M y Revisado.
+    graphical: Optional[GraphicalResult] = None
+</file>
+
+<file path="src/utils/examples.py">
+"""
+Ejemplos precargados de problemas de Programación Lineal
+
+Se separan en dos listas:
+- PUBLIC_EXAMPLES: ejemplos clásicos reconocibles que se muestran en la UI
+- RUBRIC_EXAMPLES: problemas de la rúbrica, solo para pruebas internas
+- ALL_EXAMPLES: unión de ambas (uso exclusivo en tests)
+"""
+from dataclasses import dataclass
+from typing import Tuple
+
+from domain.model.enums import OptimizationSense
+from domain.model.lp_model import LPModel
+from domain.validation.parsing import validate_model_form
+
+
+@dataclass(frozen=True)
+class ConstraintExample:
+    coefficients: Tuple[str, ...]
+    relation: str
+    rhs: str
+
+
+@dataclass(frozen=True)
+class LPExample:
+    key: str
+    name: str
+    description: str
+    sense: str
+    objective: Tuple[str, ...]
+    constraints: Tuple[ConstraintExample, ...]
+
+    def to_form(self) -> dict:
+        """El ejemplo como borrador de formulario (mismo formato que model_tab)."""
+        return {
+            "sense": self.sense,
+            "n_variables": len(self.objective),
+            "objective": list(self.objective),
+            "constraints": [
+                {
+                    **{
+                        f"x{index + 1}": coefficient
+                        for index, coefficient in enumerate(constraint.coefficients)
+                    },
+                    "rel": constraint.relation,
+                    "rhs": constraint.rhs,
+                }
+                for constraint in self.constraints
+            ],
+        }
+
+    def to_model(self) -> LPModel:
+        """Construye el LPModel pasando por el mismo validador que la entrada manual."""
+        model, errors = validate_model_form(self.to_form())
+        if errors or model is None:
+            raise ValueError(
+                f"El ejemplo '{self.key}' no es válido: " + "; ".join(errors)
+            )
+        return model
+
+
+# EJEMPLOS PÚBLICOS (se muestran en la UI)
+# Problemas clásicos reconocibles en el ámbito de investigación de operaciones
+
+PUBLIC_EXAMPLES: Tuple[LPExample, ...] = (
+    LPExample(
+        key="wyndor",
+        name="Mezcla de productos (Wyndor)",
+        description=(
+            "Problema clásico de Hillier & Lieberman. "
+            "Maximizar la ganancia de dos productos con tres restricciones de capacidad."
+        ),
+        sense="max",
+        objective=("3", "5"),
+        constraints=(
+            ConstraintExample(("1", "0"), "<=", "4"),
+            ConstraintExample(("0", "2"), "<=", "12"),
+            ConstraintExample(("3", "2"), "<=", "18"),
+        ),
+    ),
+    LPExample(
+        key="wyndor_igualdad",
+        name="Wyndor con restricción de igualdad",
+        description=(
+            "Variante del problema Wyndor donde la tercera restricción "
+            "se vuelve una igualdad exacta."
+        ),
+        sense="max",
+        objective=("3", "5"),
+        constraints=(
+            ConstraintExample(("1", "0"), "<=", "4"),
+            ConstraintExample(("0", "2"), "<=", "12"),
+            ConstraintExample(("3", "2"), "=", "18"),
+        ),
+    ),
+    LPExample(
+        key="min_dieta",
+        name="Problema de la dieta",
+        description=(
+            "Problema clásico de minimización de costos con restricciones "
+            "≤, = y ≥. Requiere variables artificiales."
+        ),
+        sense="min",
+        objective=("0.4", "0.5"),
+        constraints=(
+            ConstraintExample(("0.3", "0.1"), "<=", "2.7"),  # antes "="
+            ConstraintExample(("0.5", "0.5"), "=", "6"),
+            ConstraintExample(("0.6", "0.4"), ">=", "6"),
+        ),
+    ),
+    LPExample(
+        key="no_factible_wyndor",
+        name="Problema no factible",
+        description=(
+            "Variante de Wyndor con una restricción adicional incompatible. "
+            "No existe solución que satisfaga todas las restricciones."
+        ),
+        sense="max",
+        objective=("3", "5"),
+        constraints=(
+            ConstraintExample(("1", "0"), "<=", "4"),
+            ConstraintExample(("0", "2"), "<=", "12"),
+            ConstraintExample(("3", "2"), "<=", "18"),
+            ConstraintExample(("3", "5"), ">=", "50"),
+        ),
+    ),
+    LPExample(
+        key="no_acotado_wyndor",
+        name="Problema no acotado",
+        description=(
+            "Variante de Wyndor con una sola restricción. "
+            "La función objetivo puede crecer sin límite."
+        ),
+        sense="max",
+        objective=("3", "5"),
+        constraints=(
+            ConstraintExample(("1", "0"), "<=", "4"),
+        ),
+    ),
+    LPExample(
+        key="optimos_multiples_wyndor",
+        name="Problema con óptimos múltiples",
+        description=(
+            "Variante de Wyndor donde la función objetivo es paralela "
+            "a una restricción activa. Existen infinitas soluciones óptimas."
+        ),
+        sense="max",
+        objective=("3", "2"),
+        constraints=(
+            ConstraintExample(("1", "0"), "<=", "4"),
+            ConstraintExample(("0", "2"), "<=", "12"),
+            ConstraintExample(("3", "2"), "<=", "18"),
+        ),
+    ),
+    LPExample(
+        key="empate_entrar_wyndor",
+        name="Problema degenerado (empate al entrar)",
+        description=(
+            "Variante de Wyndor con empate en el criterio de la variable "
+            "que entra. Se resuelve por la regla del menor índice."
+        ),
+        sense="max",
+        objective=("3", "3"),
+        constraints=(
+            ConstraintExample(("1", "0"), "<=", "4"),
+            ConstraintExample(("0", "2"), "<=", "12"),
+            ConstraintExample(("3", "2"), "<=", "18"),
+        ),
+    ),
+)
+
+
+# EJEMPLOS DE RÚBRICA (solo para pruebas internas del equipo)
+#!Estos NO se muestran en la UI
+
+RUBRIC_EXAMPLES: Tuple[LPExample, ...] = (
+    LPExample(
+        key="rubrica_1",
+        name="Rúbrica 1 — estándar, redundante, gráfico",
+        description="Max 50x1 + 80x2 con restricciones <=.",
+        sense="max",
+        objective=("50", "80"),
+        constraints=(
+            ConstraintExample(("2", "1"), "<=", "100"),
+            ConstraintExample(("1", "3"), "<=", "90"),
+            ConstraintExample(("0", "1"), "<=", "40"),
+        ),
+    ),
+    LPExample(
+        key="rubrica_2",
+        name="Rúbrica 2 — Min, =, >=, RHS negativo",
+        description="Min 4x1 + x2 con igualdad, >= y RHS negativo.",
+        sense="min",
+        objective=("4", "1"),
+        constraints=(
+            ConstraintExample(("3", "1"), "=", "3"),
+            ConstraintExample(("4", "3"), ">=", "6"),
+            ConstraintExample(("-1", "-2"), ">=", "-4"),
+        ),
+    ),
+    LPExample(
+        key="rubrica_3",
+        name="Rúbrica 3 — tres variables",
+        description="Max 3x1 + 2x2 + 5x3.",
+        sense="max",
+        objective=("3", "2", "5"),
+        constraints=(
+            ConstraintExample(("1", "2", "1"), "<=", "430"),
+            ConstraintExample(("3", "0", "2"), "<=", "460"),
+            ConstraintExample(("1", "4", "0"), "<=", "420"),
+        ),
+    ),
+    LPExample(
+        key="rubrica_4",
+        name="Rúbrica 4 — no factible",
+        description="Max x1 + x2 con restricciones incompatibles.",
+        sense="max",
+        objective=("1", "1"),
+        constraints=(
+            ConstraintExample(("1", "1"), "<=", "2"),
+            ConstraintExample(("1", "1"), ">=", "5"),
+        ),
+    ),
+    LPExample(
+        key="rubrica_5",
+        name="Rúbrica 5 — no acotado",
+        description="Max x1 + x2 con región no acotada.",
+        sense="max",
+        objective=("1", "1"),
+        constraints=(
+            ConstraintExample(("1", "-1"), "<=", "1"),
+            ConstraintExample(("-1", "1"), "<=", "2"),
+        ),
+    ),
+    LPExample(
+        key="rubrica_6",
+        name="Rúbrica 6 — óptimos múltiples",
+        description="Max 2x1 + 4x2.",
+        sense="max",
+        objective=("2", "4"),
+        constraints=(
+            ConstraintExample(("1", "2"), "<=", "5"),
+            ConstraintExample(("1", "1"), "<=", "4"),
+        ),
+    ),
+    LPExample(
+        key="rubrica_7",
+        name="Rúbrica 7 — degenerado",
+        description="Max 3x1 + 9x2 con empate en razón mínima.",
+        sense="max",
+        objective=("3", "9"),
+        constraints=(
+            ConstraintExample(("1", "4"), "<=", "8"),
+            ConstraintExample(("1", "2"), "<=", "4"),
+        ),
+    ),
+    LPExample(
+        key="revisado_ejemplo_2",
+        name="Simplex Revisado — Ejemplo 2",
+        description="Max 5x1 + 4x2 con cuatro restricciones <=.",
+        sense="max",
+        objective=("5", "4"),
+        constraints=(
+            ConstraintExample(("6", "4"), "<=", "24"),
+            ConstraintExample(("1", "2"), "<=", "6"),
+            ConstraintExample(("-1", "1"), "<=", "1"),
+            ConstraintExample(("0", "1"), "<=", "2"),
+        ),
+    ),
+    LPExample(
+        key="sensibilidad_con_ge",
+        name="Sensibilidad con <= y >=",
+        description="Max 5x1 + 4x2 con restricción >=.",
+        sense="max",
+        objective=("5", "4"),
+        constraints=(
+            ConstraintExample(("2", "1"), "<=", "20"),
+            ConstraintExample(("1", "1"), "<=", "18"),
+            ConstraintExample(("1", "2"), ">=", "12"),
+        ),
+    ),
+)
+
+
+# UNIÓN (solo para tests que necesitan recorrer todos)
+
+ALL_EXAMPLES: Tuple[LPExample, ...] = PUBLIC_EXAMPLES + RUBRIC_EXAMPLES
+
+
+# Funciones públicas
+
+def list_public_examples() -> Tuple[LPExample, ...]:
+    """Devuelve los ejemplos que se muestran en la UI"""
+    return PUBLIC_EXAMPLES
+
+
+def list_all_examples() -> Tuple[LPExample, ...]:
+    """Devuelve todos los ejemplos (públicos + rúbrica), para tests"""
+    return ALL_EXAMPLES
+
+
+def get_example(key: str) -> LPExample:
+    """Busca un ejemplo por su key en todos los disponibles"""
+    for example in ALL_EXAMPLES:
+        if example.key == key:
+            return example
+
+    raise KeyError(f"No existe un ejemplo con key='{key}'")
+</file>
+
+<file path="src/presentation/app.py">
+"""
+Punto de entrada de la aplicación (Solver de Programación Lineal).
+
+Streamlit vuelve a ejecutar ESTE archivo completo, de arriba hacia abajo,
+cada vez que el usuario interactúa con un widget (escribe, pulsa un botón,
+cambia de opción...). Por eso el archivo está organizado así:
+
+1. Configuración y estado    -> se ejecuta en cada rerun, pero solo inicializa
+                                lo que todavía no existe en st.session_state.
+2. Barra lateral             -> configuración global (formato de números),
+                                panel de estado y reinicio de sesión.
+3. Pestañas                  -> cada pestaña pinta su contenido. La de
+                                "Definir Modelo" delega en model_tab.py.
+4. Panel de estado -> se pinta DESPUÉS de las pestañas, aunque
+                                visualmente esté en la barra lateral (ver
+                                `status_slot`). Así refleja los cambios que
+                                las pestañas hicieron en esta misma ejecución.
+
+Estado compartido (st.session_state)
+- model_defined : bool, True si hay un modelo confirmado y listo para resolver.
+- model         : el modelo confirmado (objeto de dominio), o None.
+- solution      : la solución calculada, o None si aún no se resolvió.
+- number_format : "Fracción" | "Decimal"; lo leen los helpers de formato.
+
+"""
+import sys
+import os
+import streamlit as st
+
+# 1. Agregar la carpeta src al path para imports limpios
+current_dir = os.path.dirname(os.path.abspath(__file__))
+src_dir = os.path.abspath(os.path.join(current_dir, '..'))
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
+# Pestañas
+from presentation.tabs.model_tab import render_model_tab  # HU-01
+from presentation.tabs.solve_tab import render_solve_tab  # HU-04
+
+# 2. Configuración de la página
+#    set_page_config debe ser la PRIMERA llamada de Streamlit del script
+st.set_page_config(
+    page_title="Solver PL",
+    page_icon=":material/calculate:",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# 3. Inicialización de Session State (HU-05)
+#    El patrón "if not in" evita sobrescribir el valor en cada rerun.
+if "model_defined" not in st.session_state:
+    st.session_state.model_defined = False
+if "solution" not in st.session_state:
+    st.session_state.solution = None
+
+# 4. Layout de Pestañas
+st.title("Solver de Programación Lineal")
+st.caption("Define tu modelo, resuélvelo paso a paso con el método simplex y analiza la sensibilidad.")
+
+# --- Barra lateral ---
+st.sidebar.title("Configuración Global")
+if "number_format" not in st.session_state:
+    st.session_state.number_format = "Fracción"
+# El valor elegido se guarda en session_state para que model_tab y los
+# componentes de resultados formateen los números de forma consistente.
+st.session_state.number_format = st.sidebar.radio(
+    "Mostrar números como:",
+    ["Fracción", "Decimal"],
+    index=0 if st.session_state.number_format == "Fracción" else 1,
+    horizontal=True,
+    help="Afecta a la vista previa del modelo y a los resultados.",
+)
+
+st.sidebar.divider()
+st.sidebar.subheader("Estado del modelo")
+# Contenedor reservado: ocupa este lugar en la barra lateral, pero su contenido se escribe más abajo, tras ejecutar las pestañas
+status_slot = st.sidebar.container()
+
+st.sidebar.divider()
+# El popover pide confirmación antes de borrar todo el session_state
+with st.sidebar.popover("Reiniciar sesión", icon=":material/restart_alt:", use_container_width=True):
+    st.markdown("Se perderán el modelo, la solución y toda la configuración.")
+    if st.button("Sí, reiniciar todo", type="primary", icon=":material/delete_forever:", use_container_width=True):
+        st.session_state.clear()
+        st.rerun()
+
+# --- Pestañas ---
+# Las etiquetas aceptan íconos Material con la sintaxis :material/nombre:
+tab1, tab2, tab3, tab4 = st.tabs([
+    ":material/edit_note: Definir Modelo",
+    ":material/play_arrow: Resolver",
+    ":material/query_stats: Sensibilidad",
+    ":material/download: Exportar",
+])
+
+# tab1 delega todo su contenido (formulario, validación, confirmación) en model_tab.py.
+with tab1:
+    st.header("Definir Modelo")
+    render_model_tab()
+
+# tab2 delega todo su contenido (selector de método, resolución y resultados) en solve_tab.py.
+with tab2:
+    st.header("Resolver")
+    render_solve_tab()
+
+# tab3: análisis de sensibilidad (pendiente)
+with tab3:
+    st.header("Sensibilidad")
+    if not st.session_state.solution:
+        st.caption("Resuelve el modelo para poder analizar su sensibilidad.")
+    st.info("Disponible cuando se implementen HU-11 y HU-12.", icon=":material/construction:")
+
+# tab4: exportación de resultados (pendiente)
+with tab4:
+    st.header("Exportar")
+    if not st.session_state.solution:
+        st.caption("Resuelve el modelo para poder exportar los resultados.")
+    st.info("Disponible cuando se implementen HU-13 y HU-14.", icon=":material/construction:")
+
+# --- Panel de estado (se escribe al final, ver `status_slot`) ---
+with status_slot:
+    if st.session_state.model_defined and st.session_state.get("model") is not None:
+        sidebar_model = st.session_state.model
+        st.success("Modelo confirmado", icon=":material/check_circle:")
+        side_col1, side_col2 = st.columns(2)
+        side_col1.metric("Variables", sidebar_model.n_variables)
+        side_col2.metric("Restricciones", sidebar_model.n_constraints)
+    else:
+        st.warning("Sin modelo confirmado", icon=":material/pending:")
+        st.caption("Defínelo y confírmalo en la pestaña **Definir Modelo**.")
+
+    if st.session_state.solution:
+        st.success("Modelo resuelto", icon=":material/task_alt:")
+</file>
+
+<file path="src/presentation/tabs/model_tab.py">
+"""
+Pestaña "Definir Modelo" — HU-01.
+
+el formulario sigue este ciclo en CADA ejecución:
+
+    1. LEER     -> se sincroniza el borrador con los valores de los widgets (st.session_state)
+    2. COMPARAR -> si algo cambió, se actualiza el borrador y se invalida el modelo confirmado
+    3. PINTAR   -> se dibujan widgets y vistas previas con el borrador ya actualizado
+    4. VALIDAR  -> validate_model_form() decide si se muestra el botón de confirmar o la lista de errores
+
+- st.session_state.model_form : borrador editable. Guarda TEXTO crudo (lo que el usuario escribe, p. ej. "3/2" o "1,5"), nunca números ya convertidos.
+- st.session_state.model: modelo de dominio ya validado. Solo existe tras pulsar "Confirmar modelo". Cualquier edición posterior lo invalida (ver _invalidate_results) para que no se resuelva un modelo desactualizado
+- `form_version`: Streamlit recuerda el valor de un widget por su `key`; el argumento `value=` solo se usa la PRIMERA vez que esa key aparece. Cuando cambia el número de variables hay que reconstruir todos los campos con valores nuevos, así que todas las keys incluyen `form_version`. Al incrementarlo, Streamlit trata los widgets como nuevos y respeta los valores del borrador
+
+Estructura del archivo
+- Helpers de formato          : convierten texto a vista previa legible
+- Render principal            : render_model_tab(), la función pública
+- Render de restricciones     : una "tarjeta" por restricción
+- Helpers de estado           : inicializar, redimensionar, confirmar, invalidar
+"""
+import streamlit as st
+
+# _to_fraction es privado en parsing.py (que no se modifica); se importa tal cual
+# para que la vista previa use el MISMO parser que la validación.
+from domain.validation.parsing import _to_fraction as parse_fraction
+from domain.validation.parsing import validate_model_form
+from utils.examples import get_example, list_public_examples
+from utils.formatting import FRACTION_MODE, format_number, subscript
+
+# Helpers de formato
+# ==================
+
+def _format_number_text(text: str) -> str:
+    """
+    Formatea un texto numérico según el formato global (Fracción/Decimal)
+    Si el texto está vacío o es inválido, devuelve "?"
+
+    El texto se interpreta con el MISMO parser que valida el modelo
+    (parse_fraction), así la vista previa y la validación nunca discrepan:
+    acepta coma o punto decimal ("1,5" y "1.5") y fracciones ("3/2").
+    Solo afecta a la VISTA PREVIA: el valor guardado en el borrador sigue
+    siendo el texto original del usuario
+    """
+    try:
+        value = parse_fraction(text)
+    except ValueError:
+        return "?"
+    return format_number(value, st.session_state.get("number_format", FRACTION_MODE))
+
+
+def _format_objective_equation(sense: str, objective: list[str]) -> str:
+    """
+    Formatea la función objetivo como ecuación escrita
+    Ejemplo: "Max Z = 3·x₁ + 5·x₂"
+    Respeta el formato global (Fracción/Decimal)
+    """
+    terms = []
+    for i, coef in enumerate(objective):
+        coef_formatted = _format_number_text(coef)
+        var_name = f"x{subscript(i + 1)}"
+        terms.append(f"{coef_formatted}·{var_name}")
+    
+    equation = " + ".join(terms)
+    sense_symbol = "Max" if sense == "max" else "Min"
+    return f"{sense_symbol} Z = {equation}"
+
+
+def _format_constraint(row: dict, n_variables: int) -> str:
+    """
+    Formatea una restricción como ecuación escrita
+    Ejemplo: "1·x₁ + 0·x₂ ≤ 4"
+    Respeta el formato global (Fracción/Decimal)
+
+    `row` usa las claves "x1".."xN" (coeficientes), "rel" y "rhs"
+    """
+    terms = []
+    for i in range(n_variables):
+        coef = _format_number_text(row.get(f"x{i + 1}", ""))
+        var_name = f"x{subscript(i + 1)}"
+        terms.append(f"{coef}·{var_name}")
+    
+    relation = row.get("rel", "<=")
+    rhs = _format_number_text(row.get("rhs", ""))
+    
+    equation = " + ".join(terms)
+    return f"{equation} {relation} {rhs}"
+
+# Nueva función try_build_model compatible con HU-02
+def _try_build_model(form: dict) -> tuple[bool, str, list[str]]:
+    """Valida el borrador y devuelve el resultado en el formato de la interfaz."""
+    model, errors = validate_model_form(form)
+
+    if errors:
+        return False, "Modelo con errores ✗", errors
+
+    if model is None:
+        return False, "No se pudo construir el modelo ✗", [
+            "La validación no devolvió un modelo ni errores."
+        ]
+
+    return True, "Modelo válido ✓", []
+
+# Render principal
+# ================
+
+def render_model_tab() -> None:
+    """
+    Renderiza el formulario dinámico de definición del modelo
+
+    Orden de la pantalla:
+    - carga de ejemplos 
+    - tamaño
+    - función objetivo
+    - restricciones
+    - validación/confirmación
+    """
+    _ensure_form_state()
+
+    form = st.session_state.model_form
+    version = st.session_state.form_version
+    
+    st.subheader("Cargar ejemplo")
+    
+    public_examples = list_public_examples()
+    example_keys = [""] + [ex.key for ex in public_examples]
+    
+    selected_key = st.selectbox(
+            "Selecciona un problema clásico para cargar",
+            options=example_keys,
+            format_func=lambda key: (
+                "- Selecciona un ejemplo -" if key == ""
+                else get_example(key).name
+            ),
+            key=f"example_selector_{version}",
+        )
+    
+    if selected_key:
+        example = get_example(selected_key)
+        st.info(f"**{example.name}**: {example.description}", icon=":material/info:")
+    
+    col_load, _ = st.columns([1, 3])
+    with col_load:
+        if st.button("Cargar ejemplo", disabled=not selected_key, icon=":material/content_paste_go:"):
+            _load_example(selected_key)
+            st.session_state.form_version += 1 # Fuerza regeneración de keys de widgets
+            _invalidate_results() # Invalida cualquier modelo confirmado previo
+            st.rerun()
+    
+    st.divider
+
+    # Tamaño del modelo
+    st.subheader("Tamaño del modelo")
+
+    col_nvars, _ = st.columns([1, 3])
+    with col_nvars:
+        n_variables = st.number_input(
+            "Número de variables de decisión",
+            min_value=1,
+            max_value=20,
+            step=1,
+            value=form["n_variables"],
+            key=f"n_variables_{version}",
+            help="Entre 1 y 20. Los valores ya ingresados se conservan al cambiar el tamaño.",
+        )
+
+        # Al cambiar el tamaño se ajusta el borrador, se sube la versión (para regenerar las keys de los widgets) y se re-ejecuta de inmediato para que el resto de la pantalla use el nuevo tamaño.
+        if n_variables != form["n_variables"]:
+            _resize_model_form(int(n_variables))
+            _invalidate_results()
+            st.session_state.form_version += 1
+            st.rerun()
+
+    # Función objetivo
+    st.subheader("Función objetivo")
+
+    with st.container(border=True):
+        sense = st.radio(
+            "Sentido de optimización",
+            options=["max", "min"],
+            format_func=lambda v: "Maximizar" if v == "max" else "Minimizar",
+            index=0 if form["sense"] == "max" else 1,
+            horizontal=True,
+            key=f"sense_{version}",
+        )
+
+        if sense != form["sense"]:
+            form["sense"] = sense
+            _invalidate_results()
+
+        st.caption("Coeficientes de cada variable en Z")
+        # Una columna por variable: la fila de coeficientes queda alineada como en la ecuación escrita
+        objective_columns = st.columns(form["n_variables"])
+        new_objective = []
+
+        for index, column in enumerate(objective_columns):
+            with column:
+                value = st.text_input(
+                    f"x{subscript(index + 1)}",
+                    value=form["objective"][index],
+                    key=f"obj_{version}_{index}",
+                    placeholder="0",
+                )
+                new_objective.append(value)
+
+        if new_objective != form["objective"]:
+            form["objective"] = new_objective
+            _invalidate_results()
+
+        # VISTA PREVIA DE LA ECUACIÓN
+        # Se calcula con el borrador ya actualizado, por eso refleja lo que el usuario acaba de escribir en la misma ejecución
+        objective_equation = _format_objective_equation(form["sense"], form["objective"])
+        st.info(f"**{objective_equation}**", icon=":material/functions:")
+
+    # Restricciones (tarjetas)
+    header_left, header_right = st.columns([3, 1], vertical_alignment="bottom")
+    with header_left:
+        st.subheader("Restricciones")
+    with header_right:
+        add_clicked = st.button(
+            "Agregar restricción",
+            icon=":material/add:",
+            key=f"add_constraint_{version}",
+            use_container_width=True,
+        )
+
+    # Se procesa el clic fuera del bloque de columnas y se re-ejecuta para que la nueva tarjeta aparezca de inmediato en esta misma pantalla.
+    if add_clicked:
+        new_row = {f"x{i + 1}": "0" for i in range(form["n_variables"])}
+        new_row["rel"] = "<="
+        new_row["rhs"] = "0"
+        form["constraints"].append(new_row)
+        _invalidate_results()
+        st.rerun()
+
+    constraints_changed = False
+
+    if not form["constraints"]:
+        st.info(
+            "Aún no hay restricciones. Usa **Agregar restricción** para crear la primera.",
+            icon=":material/info:",
+        )
+    
+    # PASO 1 -> LEER Y COMPARAR: sincroniza el borrador con los widgets ANTES de pintar
+    for idx, row in enumerate(form["constraints"]):
+        new_row = _read_constraint_card(idx, form["n_variables"], version, row)
+        if new_row != row:
+            form["constraints"][idx] = new_row
+            constraints_changed = True
+
+    if constraints_changed:
+        _invalidate_results()
+    
+    # PASO 2 -> PINTAR: las tarjetas se renderizan con el borrador ya sincronizado.
+    for idx, row in enumerate(form["constraints"]):
+        _render_constraint_card(idx, row, form["n_variables"], version)
+
+    # Validación en tiempo real
+    st.divider()
+
+    is_valid, status_message, errors = _try_build_model(form)
+
+    if is_valid:
+        st.success(status_message, icon=":material/check_circle:")
+        
+        # Dos estados posibles cuando el modelo es válido:
+        #   - ya confirmado: se muestra el resumen del modelo guardado
+        #   - sin confirmar: se ofrece el botón para confirmarlo
+        if st.session_state.get("model_defined"):
+            model = st.session_state.model
+            with st.container(border=True):
+                metric_cols = st.columns(3)
+                metric_cols[0].metric("Variables", model.n_variables)
+                metric_cols[1].metric("Restricciones", model.n_constraints)
+                metric_cols[2].metric(
+                    "Sentido",
+                    "Maximizar" if model.sense.value == "max" else "Minimizar",
+                )
+            st.success(
+                "Modelo confirmado. Puedes resolverlo en la pestaña Resolver.",
+                icon=":material/task_alt:",
+            )
+        elif st.button(
+            "Confirmar modelo y habilitar resolución",
+            type="primary",
+            icon=":material/check:",
+        ):
+            _confirm_model(form)
+            # Re-ejecuta para que el resumen (y la barra lateral) muestren el estado "confirmado" sin esperar a otra interacción
+            st.rerun()
+    else:
+        with st.container(border=True):
+            st.error(status_message, icon=":material/error:")
+            for error in errors:
+                st.markdown(f"- {error}")
+            st.caption("Corrige los errores para habilitar la resolución.")
+
+# Render de cada restricción como "tarjeta"
+# ==========================================
+
+def _render_constraint_card(idx: int, row: dict, n_variables: int, version: int) -> None:
+    """
+    Renderiza una restricción como una tarjeta con inputs claros
+
+    Solo PINTA: los valores ya se leyeron y sincronizaron en el PASO 1 de render_model_tab() con _read_constraint_card(), usando estas mismas keys.
+    Las keys siguen el patrón `<prefijo>_<version>_<idx>[_<variable>]`:
+        c_   -> coeficiente de una variable
+        rel_ -> relación (<=, >=, =)
+        rhs_ -> lado derecho
+        del_ -> botón de eliminar
+    """
+    
+    with st.container(border=True):
+        # Header de la tarjeta: etiqueta + vista previa + botón eliminar
+        header_cols = st.columns([0.6, 4, 0.5], vertical_alignment="center")
+        
+        with header_cols[0]:
+            st.markdown(f"**R{idx + 1}**")
+        
+        with header_cols[1]:
+            # Vista previa escrita en tamaño LEGIBLE (markdown normal, no caption)
+            preview = _format_constraint(row, n_variables)
+            st.markdown(f"`{preview}`")
+        
+        with header_cols[2]:
+            if st.button("", icon=":material/delete:", key=f"del_{version}_{idx}", help="Eliminar esta restricción", use_container_width=True):
+                st.session_state.model_form["constraints"].pop(idx)
+                st.session_state.form_version += 1
+                _invalidate_results()
+                st.rerun()
+        
+        # Inputs de la restricción: n coeficientes + relación + lado derecho, todos en una sola fila (por eso n_variables + 2 columnas).
+        input_cols = st.columns(n_variables + 2)
+        
+        for i in range(n_variables):
+            with input_cols[i]:
+                st.text_input(
+                    f"x{subscript(i + 1)}",
+                    value=row.get(f"x{i + 1}", "0"),
+                    key=f"c_{version}_{idx}_{i}",
+                    placeholder="0",
+                )
+        
+        with input_cols[-2]:
+            st.selectbox(
+                "Relación",
+                options=["<=", ">=", "="],
+                index=["<=", ">=", "="].index(row.get("rel", "<=")),
+                key=f"rel_{version}_{idx}",
+            )
+        
+        with input_cols[-1]:
+            st.text_input(
+                "Lado derecho",
+                value=row.get("rhs", "0"),
+                key=f"rhs_{version}_{idx}",
+                placeholder="0",
+            )
+
+
+def _read_constraint_card(idx: int, n_variables: int, version: int, fallback:dict) -> dict:
+    """
+    Lee los valores actuales de una tarjeta de restricción.
+
+    Consulta st.session_state con las mismas keys que usa _render_constraint_card(). 
+    Si una key todavía no existe (primera pintura de la tarjeta, o tras un cambio de form_version), usa como respaldo el valor del borrador (`fallback`), NO un "0" fijo: así leer antes de pintar no pisa los datos recién cargados por un ejemplo, un redimensionado o una eliminación.
+    """
+    row = {}
+    
+    for i in range(n_variables):
+        key = f"x{i + 1}"
+        row[key] = st.session_state.get(f"c_{version}_{idx}_{i}", fallback.get(key, "0"))
+    
+    row["rel"] = st.session_state.get(f"rel_{version}_{idx}", fallback.get("rel", "<="))
+    row["rhs"] = st.session_state.get(f"rhs_{version}_{idx}", fallback.get("rhs", "0"))
+    
+    return row
+
+# Helpers de estado
+# =================
+
+def _ensure_form_state() -> None:
+    """
+    Crea el borrador inicial la primera vez (ejemplo clásico de 2 variables y 3 restricciones) y el contador `form_version`. En reruns posteriores no hace nada, para no pisar lo que el usuario ya editó
+    """
+    if "model_form" not in st.session_state:
+        st.session_state.model_form = {
+            "sense": "max",
+            "n_variables": 2,
+            "objective": ["3", "5"],
+            "constraints": [
+                {"x1": "1", "x2": "0", "rel": "<=", "rhs": "4"},
+                {"x1": "0", "x2": "2", "rel": "<=", "rhs": "12"},
+                {"x1": "3", "x2": "2", "rel": "<=", "rhs": "18"},
+            ],
+        }
+
+    if "form_version" not in st.session_state:
+        st.session_state.form_version = 0
+
+
+def _resize_model_form(new_n: int) -> None:
+    """
+    Ajusta el borrador a `new_n` variables conservando lo ya escrito.
+
+    - Si crece: las variables nuevas empiezan con coeficiente "0".
+    - Si se reduce: se descartan los coeficientes de las últimas variables.
+    Se aplica tanto a la función objetivo como a cada restricción.
+    """
+    form = st.session_state.model_form
+    old_n = form["n_variables"]
+
+    objective = form["objective"]
+    if new_n > old_n:
+        objective = objective + ["0"] * (new_n - old_n)
+    else:
+        objective = objective[:new_n]
+
+    new_constraints = []
+    for row in form["constraints"]:
+        new_row = {
+            f"x{index + 1}": row.get(f"x{index + 1}", "0")
+            for index in range(new_n)
+        }
+        new_row["rel"] = row.get("rel", "<=")
+        new_row["rhs"] = row.get("rhs", "0")
+        new_constraints.append(new_row)
+
+    form["n_variables"] = new_n
+    form["objective"] = objective
+    form["constraints"] = new_constraints
+
+# Nueva función confirm model compatible con HU-02
+def _confirm_model(form: dict) -> None:
+    """Valida el borrador y guarda el modelo si es válido."""
+    model, errors = validate_model_form(form)
+
+    if errors or model is None:
+        st.session_state.model_defined = False
+        st.session_state.model = None
+
+        if errors:
+            for error in errors:
+                st.error(error)
+        else:
+            st.error("La validación no devolvió un modelo.")
+
+        return
+
+    st.session_state.model = model
+    st.session_state.model_defined = True
+    st.session_state.model_fingerprint = hash(model)
+
+    st.session_state.solution = None
+    st.session_state.sensitivity = None
+    st.session_state.current_step = 0
+
+    st.success("Modelo confirmado. Puedes resolverlo en la pestaña Resolver.")
+
+def _load_example(key: str) -> None:
+    """
+    Carga un ejemplo precargado en el borrador del formulario
+    
+    Sobrescribe el borrador actual y fuerza una nueva versión para regenerar las keys de los widgets, asegurando que Streamlit renderice los nuevos campos correctamente
+    """
+    st.session_state.model_form = get_example(key).to_form()
+
+def _invalidate_results() -> None:
+    """
+    Marca el modelo como "no confirmado" y borra todo lo derivado de él
+
+    Se llama ante CUALQUIER edición del borrador (sentido, coeficientes, restricciones, tamaño), de modo que el usuario siempre tenga que reconfirmar y nunca se muestre una solución de un modelo viejo
+    """
+    st.session_state.model_defined = False
+    st.session_state.model = None
+    st.session_state.solution = None
+    st.session_state.sensitivity = None
+    st.session_state.current_step = 0
+</file>
+
+</files>

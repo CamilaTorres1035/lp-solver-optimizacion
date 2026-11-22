@@ -5,7 +5,7 @@ Ejecutar: python -m unittest tests/domain/test_linalg.py -v
 import unittest
 from fractions import Fraction
 
-from src.domain.solver.linalg import (
+from domain.solver.linalg import (
     Matrix,
     Vector,
     identity_matrix,
