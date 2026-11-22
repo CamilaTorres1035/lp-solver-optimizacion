@@ -5,7 +5,7 @@ Ejecutar: python -m unittest tests/domain/test_symbolic.py -v
 import unittest
 from fractions import Fraction
 
-from src.domain.solver.symbolic import ValorM
+from domain.solver.symbolic import ValorM
 
 
 def F(n, d=None) -> Fraction:

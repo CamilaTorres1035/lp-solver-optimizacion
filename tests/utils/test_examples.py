@@ -1,7 +1,7 @@
 import unittest
 from fractions import Fraction
 
-from src.utils.examples import (
+from utils.examples import (
     get_example,
     list_public_examples,
     list_all_examples,

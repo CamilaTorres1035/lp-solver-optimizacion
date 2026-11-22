@@ -68,7 +68,7 @@ La aplicación se abrirá automáticamente en el navegador (por defecto en `http
 
 ```bash
 # Ejecutar todas las pruebas
-python -m unittest discover -s tests -v
+python python -m unittest discover -s tests -t . -v
 
 # Ejecutar un módulo específico
 python -m unittest tests/domain/test_linalg.py -v

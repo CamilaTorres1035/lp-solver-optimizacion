@@ -1,9 +1,9 @@
 import unittest
 from fractions import Fraction
 
-from src.domain.model.enums import OptimizationSense, Relation
-from src.domain.model.lp_model import Constraint, LPModel
-from src.domain.validation.parsing import (
+from domain.model.enums import OptimizationSense, Relation
+from domain.model.lp_model import Constraint, LPModel
+from domain.validation.parsing import (
     MAX_CONSTRAINTS,
     MAX_VARIABLES,
     _build_model,
