@@ -6,7 +6,7 @@ el formulario sigue este ciclo en CADA ejecución:
     1. LEER     -> se sincroniza el borrador con los valores de los widgets (st.session_state)
     2. COMPARAR -> si algo cambió, se actualiza el borrador y se invalida el modelo confirmado
     3. PINTAR   -> se dibujan widgets y vistas previas con el borrador ya actualizado
-    4. VALIDAR  -> validate_model_form() decide si se muestra el botón de confirmar o la lista de errores
+    4. VALIDAR  -> validate_model() decide si se muestra el botón de confirmar o la lista de errores
 
 - st.session_state.model_form : borrador editable. Guarda TEXTO crudo (lo que el usuario escribe, p. ej. "3/2" o "1,5"), nunca números ya convertidos.
 - st.session_state.model: modelo de dominio ya validado. Solo existe tras pulsar "Confirmar modelo". Cualquier edición posterior lo invalida (ver _invalidate_results) para que no se resuelva un modelo desactualizado
@@ -20,10 +20,8 @@ Estructura del archivo
 """
 import streamlit as st
 
-# _to_fraction es privado en parsing.py (que no se modifica); se importa tal cual
-# para que la vista previa use el MISMO parser que la validación.
-from domain.validation.parsing import _to_fraction as parse_fraction
-from domain.validation.parsing import validate_model_form
+from application.use_cases.invalidate_results import invalidate_results
+from application.use_cases.validate_model import parse_fraction, validate_model
 from utils.examples import get_example, list_public_examples
 from utils.formatting import FRACTION_MODE, format_number, subscript
 
@@ -88,7 +86,7 @@ def _format_constraint(row: dict, n_variables: int) -> str:
 # Nueva función try_build_model compatible con HU-02
 def _try_build_model(form: dict) -> tuple[bool, str, list[str]]:
     """Valida el borrador y devuelve el resultado en el formato de la interfaz."""
-    model, errors = validate_model_form(form)
+    model, errors = validate_model(form)
 
     if errors:
         return False, "Modelo con errores ✗", errors
@@ -432,11 +430,10 @@ def _resize_model_form(new_n: int) -> None:
 # Nueva función confirm model compatible con HU-02
 def _confirm_model(form: dict) -> None:
     """Valida el borrador y guarda el modelo si es válido."""
-    model, errors = validate_model_form(form)
+    model, errors = validate_model(form)
 
     if errors or model is None:
-        st.session_state.model_defined = False
-        st.session_state.model = None
+        invalidate_results(st.session_state)
 
         if errors:
             for error in errors:
@@ -446,14 +443,10 @@ def _confirm_model(form: dict) -> None:
 
         return
 
+    invalidate_results(st.session_state)
     st.session_state.model = model
     st.session_state.model_defined = True
     st.session_state.model_fingerprint = hash(model)
-
-    st.session_state.solution = None
-    st.session_state.sensitivity = None
-    st.session_state.current_step = 0
-
     st.success("Modelo confirmado. Puedes resolverlo en la pestaña Resolver.")
 
 def _load_example(key: str) -> None:
@@ -465,13 +458,5 @@ def _load_example(key: str) -> None:
     st.session_state.model_form = get_example(key).to_form()
 
 def _invalidate_results() -> None:
-    """
-    Marca el modelo como "no confirmado" y borra todo lo derivado de él
-
-    Se llama ante CUALQUIER edición del borrador (sentido, coeficientes, restricciones, tamaño), de modo que el usuario siempre tenga que reconfirmar y nunca se muestre una solución de un modelo viejo
-    """
-    st.session_state.model_defined = False
-    st.session_state.model = None
-    st.session_state.solution = None
-    st.session_state.sensitivity = None
-    st.session_state.current_step = 0
+    """Delega en el caso de uso de HU-05. Se llama ante cualquier edición. conserva el nombre, pero el cuerpo se reduce a una delegación"""
+    invalidate_results(st.session_state)

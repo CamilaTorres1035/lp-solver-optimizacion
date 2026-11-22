@@ -46,6 +46,9 @@ def _to_fraction(value: str) -> Fraction:
 
     raise ValueError(f"'{raw}' no es un número válido.")
 
+# API pública del parser de celdas (HU-02). `_to_fraction` se conserva como alias para no romper los tests existentes
+parse_fraction = _to_fraction
+
 def _collect_numeric_errors(form: dict) -> list[str]:
     """
         Recolecta los errores numéricos obtenidos

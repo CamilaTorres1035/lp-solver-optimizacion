@@ -33,6 +33,10 @@ src_dir = os.path.abspath(os.path.join(current_dir, '..'))
 if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 
+from application.use_cases.invalidate_results import (
+    discard_stale_results,
+    invalidate_results,
+)
 # Pestañas
 from presentation.tabs.model_tab import render_model_tab  # HU-01
 from presentation.tabs.solve_tab import render_solve_tab  # HU-04
@@ -50,8 +54,14 @@ st.set_page_config(
 #    El patrón "if not in" evita sobrescribir el valor en cada rerun.
 if "model_defined" not in st.session_state:
     st.session_state.model_defined = False
-if "solution" not in st.session_state:
-    st.session_state.solution = None
+if "solutions" not in st.session_state:
+    st.session_state.solutions = {}
+if "current_step" not in st.session_state:
+    st.session_state.current_step = 0
+if "sensitivity" not in st.session_state:
+    st.session_state.sensitivity = None
+
+discard_stale_results(st.session_state)
 
 # 4. Layout de Pestañas
 st.title("Solver de Programación Lineal")
@@ -81,7 +91,8 @@ st.sidebar.divider()
 with st.sidebar.popover("Reiniciar sesión", icon=":material/restart_alt:", use_container_width=True):
     st.markdown("Se perderán el modelo, la solución y toda la configuración.")
     if st.button("Sí, reiniciar todo", type="primary", icon=":material/delete_forever:", use_container_width=True):
-        st.session_state.clear()
+        invalidate_results(st.session_state)  # misma función que usa la edición (HU-05)
+        st.session_state.clear()              # borrador, configuración y widgets
         st.rerun()
 
 # --- Pestañas ---
@@ -106,14 +117,14 @@ with tab2:
 # tab3: análisis de sensibilidad (pendiente)
 with tab3:
     st.header("Sensibilidad")
-    if not st.session_state.solution:
+    if not st.session_state.solutions:
         st.caption("Resuelve el modelo para poder analizar su sensibilidad.")
     st.info("Disponible cuando se implementen HU-11 y HU-12.", icon=":material/construction:")
 
 # tab4: exportación de resultados (pendiente)
 with tab4:
     st.header("Exportar")
-    if not st.session_state.solution:
+    if not st.session_state.solutions:
         st.caption("Resuelve el modelo para poder exportar los resultados.")
     st.info("Disponible cuando se implementen HU-13 y HU-14.", icon=":material/construction:")
 
@@ -129,5 +140,8 @@ with status_slot:
         st.warning("Sin modelo confirmado", icon=":material/pending:")
         st.caption("Defínelo y confírmalo en la pestaña **Definir Modelo**.")
 
-    if st.session_state.solution:
+    if st.session_state.solutions:
         st.success("Modelo resuelto", icon=":material/task_alt:")
+    
+    if st.session_state.get("results_invalidated") and not st.session_state.solutions:
+        st.info("Cambiaste el modelo: debes resolver nuevamente.", icon=":material/refresh:")
