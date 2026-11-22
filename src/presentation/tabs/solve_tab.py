@@ -116,17 +116,15 @@ def _solve_and_store(model: LPModel, method: SolverMethod) -> None:
         st.error(str(error), icon=":material/error:")
         return
 
-    st.session_state.solution = solution
-    st.session_state.solution_method = method
+    st.session_state.solutions[method] = solution
     st.session_state.current_step = 0
+    st.session_state.results_invalidated = False
 
 
 def _current_solution(model: LPModel, method: SolverMethod):
-    """La solución guardada, solo si corresponde al método elegido y al modelo vigente."""
-    solution = st.session_state.get("solution")
+    """La solución guardada para el método elegido, solo si es del modelo vigente"""
+    solution = st.session_state.get("solutions", {}).get(method)
     if solution is None:
-        return None
-    if st.session_state.get("solution_method") != method:
         return None
     if solution.model_fingerprint != hash(model):
         return None
