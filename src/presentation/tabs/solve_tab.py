@@ -108,10 +108,7 @@ def _solve_and_store(model: LPModel, method: SolverMethod) -> None:
     """Ejecuta el caso de uso y guarda el resultado; los errores se muestran, no rompen la app."""
     try:
         with st.spinner("Resolviendo..."):
-            if method == SolverMethod.GRAN_M:
-                solution = get_stub_solution(model)  # transitorio hasta HU-06
-            else:
-                solution = solve_lp(model, method)
+            solution = solve_lp(model, method)
     except (ValueError, NotImplementedError) as error:
         st.error(str(error), icon=":material/error:")
         return
