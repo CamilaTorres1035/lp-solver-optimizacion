@@ -30,10 +30,15 @@ class TestSolveLp(unittest.TestCase):
         self.assertEqual(s.optimal_value, F(36))
         self.assertIsNotNone(s.graphical)
 
-    def test_metodos_pendientes_avisan(self):
-        for method in (SolverMethod.GRAN_M, SolverMethod.REVISADO):
-            with self.assertRaises(NotImplementedError):
-                solve_lp(_wyndor(), method)
+    def test_revisado_pendiente_avisa(self):
+        with self.assertRaises(NotImplementedError):
+            solve_lp(_wyndor(), SolverMethod.REVISADO)
+
+    def test_gran_m_devuelve_solution_real(self):
+        s = solve_lp(_wyndor(), SolverMethod.GRAN_M)
+        self.assertEqual(s.status, SolutionStatus.OPTIMA)
+        self.assertEqual(s.optimal_value, F(36))
+        self.assertGreater(len(s.steps), 0)
 
     def test_grafico_con_tres_variables_propaga_valueerror(self):
         model, errors = validate_model_form({
