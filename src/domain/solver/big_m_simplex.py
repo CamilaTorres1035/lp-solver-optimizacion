@@ -130,3 +130,55 @@ class BigMSimplexSolver:
         self._flipped = tuple(r[3] for r in rows)
         self._notes = tuple(notes)
         self._steps: List[Step] = []
+    
+    def _entering_column(self) -> Tuple[Optional[int], Tuple[int, ...]]:
+        """Más negativo (M primero); el empate lo gana el menor índice de columna"""
+        row0 = self._tableau[0]
+        negatives = [(row0[j], j) for j in self._candidates if row0[j] < 0]
+        if not negatives:
+            return None, ()
+        best = min(v for v, _ in negatives)
+        tied = tuple(j for v, j in negatives if v == best)
+        return tied[0], tied
+
+    def _check_optimality(self) -> bool:
+        return self._entering_column()[0] is None
+
+    def _find_pivot(self):
+        """Devuelve (pivote o None si no hay fila que salga, razones, justificación)"""
+        entering, tied = self._entering_column()
+        m = self._model.n_constraints
+        ratios = tuple(
+            self._tableau[i][-1] / self._tableau[i][entering]
+            if self._tableau[i][entering] > 0 else None
+            for i in range(1, m + 1)
+        )
+        valid = [(r, i) for i, r in enumerate(ratios, start=1) if r is not None]
+        if not valid:
+            return None, ratios, (
+                f"Entra {self._labels[entering]}, pero ninguna ecuación tiene "
+                "coeficiente positivo en su columna: Z mejora sin límite (no acotado)."
+            )
+        r_min = min(r for r, _ in valid)
+        tied_rows = [i for r, i in valid if r == r_min]
+        # Empate: sale la variable básica de menor índice de columna
+        row = min(tied_rows, key=lambda i: self._basis[i - 1])
+        return (PivotInfo(row=row, column=entering), ratios,
+                self._justify(entering, tied, ratios, row))
+
+    def _justify(self, entering, tied, ratios, row) -> str:
+        labels = self._labels
+        text = (f"Entra {labels[entering]}: es la variable con el coeficiente más "
+                f"negativo en la fila 0 ({self._tableau[0][entering]}).")
+        if len(tied) > 1:
+            names = ", ".join(labels[j] for j in tied)
+            text += (f" Empate entre {names}: entra {labels[entering]} por la "
+                     "regla del menor índice.")
+        parts = []
+        for i, r in enumerate(ratios, start=1):
+            a = self._tableau[i][entering]
+            parts.append(f"Ec {i}: no aplica (coef. {a} → —)" if r is None
+                         else f"Ec {i}: {self._tableau[i][-1]}/{a} = {r}")
+        text += (f" Razones: {'; '.join(parts)} → mínima {ratios[row - 1]} en la "
+                 f"Ec {row}, sale {labels[self._basis[row - 1]]}.")
+        return text + f" Pivote = {self._tableau[row][entering]}."
