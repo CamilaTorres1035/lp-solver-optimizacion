@@ -1,7 +1,7 @@
 from enum import Enum
 from .protocols import Solver
 from .graphical_solver import GraphicalSolver
-# from .big_m_simplex import BigMSimplexSolver (se implementará en Sprint 2)
+from .big_m_simplex import BigMSimplexSolver 
 
 class SolverMethod(Enum):
     GRAFICO = "grafico"
@@ -14,8 +14,7 @@ class SolverFactory:
         if method == SolverMethod.GRAFICO:
             return GraphicalSolver()
         elif method == SolverMethod.GRAN_M:
-            # return BigMSimplexSolver()
-            raise NotImplementedError("Gran M en desarrollo")
+            return BigMSimplexSolver()
         elif method == SolverMethod.REVISADO:
             # return RevisedSimplexSolver()
             raise NotImplementedError("Revisado en desarrollo")
