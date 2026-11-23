@@ -182,3 +182,46 @@ class BigMSimplexSolver:
         text += (f" Razones: {'; '.join(parts)} → mínima {ratios[row - 1]} en la "
                  f"Ec {row}, sale {labels[self._basis[row - 1]]}.")
         return text + f" Pivote = {self._tableau[row][entering]}."
+    
+    def _update(self, pivot: PivotInfo) -> None:
+        self._tableau = pivot_matrix(self._tableau, pivot.row, pivot.column)
+        self._basis[pivot.row - 1] = pivot.column
+
+    def _build_step(self, pivot, ratios, justification, notes=()) -> None:
+        m = self._model.n_constraints
+        all_notes = tuple(notes) + (self._notes if not self._steps else ())
+        self._steps.append(Step(
+            iteration=len(self._steps),
+            row_labels=tuple(str(i) for i in range(m + 1)),
+            column_labels=tuple(self._labels),
+            tableau=self._tableau,
+            basic_variables=tuple(self._labels[b] for b in self._basis),
+            ratios=ratios,
+            pivot=pivot,
+            notes=all_notes,
+            justification=justification,
+        ))
+
+    def solve(self, model: LPModel) -> Solution:
+        self._initialize(model)
+        while True:
+            if self._check_optimality():
+                return self._finish()
+            pivot, ratios, text = self._find_pivot()
+            if pivot is None:
+                self._build_step(None, ratios, text)
+                return self._solution(
+                    SolutionStatus.NO_ACOTADA,
+                    "La solución es no acotada: la función objetivo puede mejorar "
+                    "sin límite. Revisa la formulación (posible restricción faltante).",
+                )
+            if len(self._steps) >= MAX_ITERATIONS:
+                self._build_step(None, ratios, (
+                    f"Se alcanzó el límite de {MAX_ITERATIONS} iteraciones."))
+                return self._solution(
+                    SolutionStatus.LIMITE_ITERACIONES,
+                    f"Se detuvo tras {MAX_ITERATIONS} iteraciones sin llegar al "
+                    "óptimo (posible ciclado).",
+                )
+            self._build_step(pivot, ratios, text)
+            self._update(pivot)
