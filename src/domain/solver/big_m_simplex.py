@@ -225,3 +225,62 @@ class BigMSimplexSolver:
                 )
             self._build_step(pivot, ratios, text)
             self._update(pivot)
+        
+    def _finish(self) -> Solution:
+        model, n, m = self._model, self._model.n_variables, self._model.n_constraints
+        # No factible: una artificial con valor > 0 sigue en la base
+        for i, b in enumerate(self._basis, start=1):
+            if b in self._artificial and self._tableau[i][-1] > 0:
+                self._build_step(None, (None,) * m, (
+                    "Ningún coeficiente negativo en la fila 0, pero la artificial "
+                    f"{self._labels[b]} sigue en la base con valor "
+                    f"{self._tableau[i][-1]} > 0 → no factible."))
+                return self._solution(
+                    SolutionStatus.NO_FACTIBLE,
+                    "El modelo no tiene solución factible: no se pudo eliminar la "
+                    f"variable artificial {self._labels[b]}.",
+                )
+
+        self._build_step(None, (None,) * m, (
+            "Ningún coeficiente negativo en la fila 0 → la solución es óptima."))
+        point = [F(0)] * n
+        for i, b in enumerate(self._basis, start=1):
+            if 1 <= b <= n:
+                point[b - 1] = self._tableau[i][-1]
+        z = self._sf * self._tableau[0][-1].to_fraction()   # RHS fila 0 = W = sf·Z
+        basis = BasisInfo(
+            basic_variables=tuple(self._labels[b] for b in self._basis),
+            basis_inverse=tuple(
+                tuple(self._tableau[i][c] for c in self._initial_basis)
+                for i in range(1, m + 1)),
+            row_to_constraint=tuple(range(1, m + 1)),
+            rhs_sign_flipped=self._flipped,
+            sense_factor=self._sf,
+        )
+        return self._solution(
+            SolutionStatus.OPTIMA, f"Solución óptima: Z = {z}.",
+            values=tuple((f"x{j + 1}", v) for j, v in enumerate(point)),
+            z=z, slacks=_slacks(model, point), basis=basis,
+        )
+
+    def _solution(self, status, message, values=(), z=None, slacks=(), basis=None):
+        return Solution(
+            status=status, values=values, optimal_value=z, slacks=slacks,
+            alt_values=(), steps=tuple(self._steps), notes=self._notes,
+            message=message, basis_info=basis,
+            model_fingerprint=hash(self._model),
+        )
+
+
+def _slacks(model: LPModel, point) -> Tuple[Fraction, ...]:
+    """Holgura (<=) o exceso (>=) sobre el modelo ORIGINAL; 0 en igualdades."""
+    result = []
+    for c in model.constraints:
+        lhs = sum((a * x for a, x in zip(c.coefficients, point)), F(0))
+        if c.relation == Relation.LESS_EQUAL:
+            result.append(c.rhs - lhs)
+        elif c.relation == Relation.GREAT_EQUAL:
+            result.append(lhs - c.rhs)
+        else:
+            result.append(F(0))
+    return tuple(result)
