@@ -96,6 +96,18 @@ class TestGraphicalFigure(unittest.TestCase):
         self.assertFalse(any(t.name.startswith("Región factible") for t in fig.data))
         self.assertTrue(any(t.name.startswith("R1:") for t in fig.data))
         self.assertEqual(_red_traces(fig), [])
+    
+    def test_escala_1a1_y_cuadricula_cuadrada(self):
+        model, result = _wyndor()
+        fig = build_graphical_figure(result, sense=model.sense)
+        self.assertEqual(fig.layout.yaxis.scaleanchor, "x")
+        self.assertEqual(fig.layout.yaxis.scaleratio, 1)
+        self.assertEqual(fig.layout.xaxis.constrain, "domain")
+        self.assertEqual(fig.layout.yaxis.constrain, "domain")
+        self.assertEqual(fig.layout.xaxis.dtick, fig.layout.yaxis.dtick)
+        x0, x1 = fig.layout.xaxis.range
+        y0, y1 = fig.layout.yaxis.range
+        self.assertAlmostEqual(x1 - x0, y1 - y0, places=9)
 
 
 class TestVerticesTable(unittest.TestCase):

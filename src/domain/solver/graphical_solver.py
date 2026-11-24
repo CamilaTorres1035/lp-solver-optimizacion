@@ -394,24 +394,21 @@ def _improves(model: LPModel, direction: Point) -> bool:
 
 def _visible_window(points: Sequence[Point], region_is_open: bool) -> Window:
     """
-    Ventana de dibujo: el origen y los vértices del primer cuadrante (factibles o no) más un margen del 20 %. Se ignoran los puntos con coordenadas negativas porque x >= 0
+    Ventana de dibujo CUADRADA: mismo rango en ambos ejes, para que la escala sea 1:1 y la cuadrícula salga cuadrada (una unidad de x1 = una unidad de x2).
 
-    Si la región es abierta se amplía al doble del vértice más lejano, para que en pantalla se vea que la región continúa y no termina en el último vértice.
+    Se toman el origen y los vértices del primer cuadrante (factibles o no);
+    los de coordenadas negativas se ignoran porque x >= 0. Si la región es abierta se amplía al doble del vértice más lejano, para que se vea que la región continúa. El margen negativo deja ver los ejes.
     """
     in_first_quadrant = [p for p in points if p[0] >= 0 and p[1] >= 0]
     xs = [_ZERO] + [p[0] for p in in_first_quadrant]
     ys = [_ZERO] + [p[1] for p in in_first_quadrant]
-
-    x_max, y_max = max(xs), max(ys)
+    reach = max(max(xs), max(ys), F(1))
     if region_is_open:
-        reach = 2 * max(x_max, y_max, F(1))
-        x_max = y_max = reach
+        reach = 2 * reach
 
-    x_margin = x_max / 5 or F(1)
-    y_margin = y_max / 5 or F(1)
-
-    # El margen negativo deja ver los ejes
-    return -x_margin, x_max + x_margin, -y_margin, y_max + y_margin
+    margin = reach / 5
+    low, high = -margin, reach + margin
+    return low, high, low, high
 
 
 def _feasible_region_polygon(

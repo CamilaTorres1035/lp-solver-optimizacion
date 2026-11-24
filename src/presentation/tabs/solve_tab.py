@@ -19,6 +19,7 @@ La navegación paso a paso y el tableau llegan con HU-08 y HU-09.
 """
 
 import streamlit as st
+from html import escape as _escape
 
 from application.use_cases.solve_lp import solve_lp
 from domain.model.lp_model import LPModel
@@ -140,6 +141,10 @@ def _render_graphical_result(
         graphical, sense=model.sense, number_format=number_format
     )
     st.plotly_chart(figure, width="stretch")
+    st.caption(
+        "Escala 1:1 — una unidad de x₁ ocupa lo mismo que una unidad de x₂; "
+        "la cuadrícula es cuadrada"
+    )
 
     st.subheader("Vértices")
     hidden = hidden_vertices_count(graphical)
@@ -156,42 +161,6 @@ def _render_graphical_result(
     )
     
     _render_slacks(solution, model, number_format)
-
-
-def _render_status_banner(solution: Solution) -> None:
-    if solution.status == SolutionStatus.OPTIMA:
-        st.success(solution.message, icon=":material/check_circle:")
-    elif solution.status == SolutionStatus.NO_FACTIBLE:
-        st.error(solution.message, icon=":material/error:")
-    else:
-        st.warning(solution.message, icon=":material/warning:")
-
-
-def _render_optimal_values(solution: Solution, number_format: str) -> None:
-    """Estado, Z y el/los vértice(s) óptimo(s). Con dos extremos se informa el segmento."""
-    with st.container(border=True):
-        columns = st.columns(3)
-        columns[0].metric("Estado", solution.status.value)
-        if solution.optimal_value is not None:
-            columns[1].metric("Z*", format_number(solution.optimal_value, number_format))
-        columns[2].metric("Solución", _format_values(solution.values, number_format))
-
-        if solution.alt_values:
-            # values = primer óptimo; alt_values = el del pivote extra. El orden no es semántico
-            st.info(
-                f"Otro vértice óptimo: {_format_values(solution.alt_values, number_format)}. "
-                "Hay infinitos óptimos sobre el segmento que los une.",
-                icon=":material/join:",
-            )
-
-
-def _format_values(values, number_format: str) -> str:
-    parts = []
-    for name, value in values:
-        shown = f"x{subscript(int(name[1:]))}" if name[1:].isdigit() else name
-        parts.append(f"{shown} = {format_number(value, number_format)}")
-    return ", ".join(parts)
-
 
 # Resultados del Gran M 
 # ======================
@@ -212,6 +181,61 @@ def _render_simplex_result(solution: Solution, model: LPModel, number_format: st
         f"{len(solution.steps)} iteraciones calculadas. "
         "La navegación y el tableau llegan con HU-08 y HU-09."
     )
+
+def _render_status_banner(solution: Solution) -> None:
+    if solution.status == SolutionStatus.OPTIMA:
+        st.success(solution.message, icon=":material/check_circle:")
+    elif solution.status == SolutionStatus.NO_FACTIBLE:
+        st.error(solution.message, icon=":material/error:")
+    else:
+        st.warning(solution.message, icon=":material/warning:")
+
+# ---------- resultados
+# --------------------------------------------------------------- resultados
+
+# st.metric recorta el valor con "…" (white-space: nowrap + text-overflow:
+# ellipsis). Dentro de esta tarjeta se permite el salto de línea; tipografía,
+# tamaños y layout quedan exactamente igual.
+_METRIC_CSS = """
+<style>
+.st-key-result_card [data-testid="stElementContainer"]:has(style){display:none;}
+.st-key-result_card [data-testid="stMetricValue"],
+.st-key-result_card [data-testid="stMetricValue"] > div{
+  white-space:normal !important;
+  overflow:visible !important;
+  text-overflow:clip !important;
+  overflow-wrap:anywhere;
+  line-height:1.25;
+}
+</style>
+"""
+
+
+def _format_values(values, number_format: str) -> str:
+    parts = []
+    for name, value in values:
+        shown = f"x{subscript(int(name[1:]))}" if name[1:].isdigit() else name
+        parts.append(f"{shown} = {format_number(value, number_format)}")
+    return ", ".join(parts)
+
+
+def _render_optimal_values(solution: Solution, number_format: str) -> None:
+    """Estado, Z* y el/los vértice(s) óptimo(s). Con dos extremos se informa el segmento."""
+    with st.container(border=True, key="result_card"):
+        st.markdown(_METRIC_CSS, unsafe_allow_html=True)
+        columns = st.columns(3)
+        columns[0].metric("Estado", solution.status.value)
+        if solution.optimal_value is not None:
+            columns[1].metric("Z*", format_number(solution.optimal_value, number_format))
+        columns[2].metric("Solución", _format_values(solution.values, number_format))
+        if solution.alt_values:
+            # values = primer óptimo; alt_values = el del pivote extra. El orden no es semántico.
+            st.info(
+                f"Otro vértice óptimo: {_format_values(solution.alt_values, number_format)}. "
+                "Hay infinitos óptimos sobre el segmento que los une: "
+                "x = λA + (1−λ)B, con 0 ≤ λ ≤ 1.",
+                icon=":material/join:",
+            )
 
 def _render_slacks(
     solution: Solution, model: LPModel, number_format: str
