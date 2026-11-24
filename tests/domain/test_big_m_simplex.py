@@ -1,7 +1,9 @@
 import unittest
 from fractions import Fraction as F
+from unittest import mock
 
 from domain.model.lp_model import build_model
+from domain.solver import big_m_simplex
 from domain.solver.big_m_simplex import BigMSimplexSolver
 from domain.solver.linalg import pivot_matrix
 from domain.solver.solution import SolutionStatus
@@ -12,6 +14,9 @@ from utils.examples import get_example
 def _solve(key):
     return BigMSimplexSolver().solve(get_example(key).to_model())
 
+def _solve_model(sense, objective, constraints):
+    rows = [{"coefficients": c, "relation": r, "rhs": b} for c, r, b in constraints]
+    return BigMSimplexSolver().solve(build_model(sense, objective, rows))
 
 def _path(solution):
     """[(entra, sale), ...] según el contrato de Step."""
@@ -117,6 +122,47 @@ class TestGranMEstabilidad(unittest.TestCase):
                 self.assertIsNotNone(s.status)
                 self.assertGreater(len(s.steps), 0)
 
+class TestCasosEspeciales(unittest.TestCase):
+    """HU-10: cada caso especial termina con un estado, nunca con una excepción."""
+    def test_rubrica_7_degenerado(self):
+        s = _solve("rubrica_7")
+        self.assertEqual(s.status, SolutionStatus.OPTIMA)
+        self.assertEqual(s.steps[0].ratios, (F(2), F(2)))
+        self.assertEqual(_path(s), [("x2", "S1"), ("x1", "S2")])
+        self.assertEqual(dict(s.values), {"x1": F(0), "x2": F(2)})
+        self.assertEqual(s.optimal_value, F(18))
+        self.assertEqual(s.alt_values, ())
+        self.assertEqual(s.steps[-1].basic_variables, ("x2", "x1"))  # x1 básica en 0
+        self.assertTrue(any("Degeneración" in n for n in s.steps[0].notes))
+        self.assertIn("menor índice", s.steps[0].justification)
+    
+    # --- empate al entrar --
+    def test_empate_al_entrar_usa_menor_indice(self):
+        s = _solve("empate_entrar_wyndor")
+        self.assertEqual(s.steps[0].pivot.column, 1)   # entra x1
+        self.assertIn("Empate entre x1, x2", s.steps[0].justification)
+        self.assertEqual(s.optimal_value, F(24))
+    
+     # --- ciclado y límite --
+    def test_ciclado_de_beale_se_resuelve_con_bland(self):
+        s = _solve_model("min", ["-3/4", "20", "-1/2", "6"], [
+            (["1/4", "-8", "-1", "9"], "<=", "0"),
+            (["1/2", "-12", "-1/2", "3"], "<=", "0"),
+            (["0", "0", "1", "0"], "<=", "1")])
+        self.assertEqual(s.status, SolutionStatus.OPTIMA)
+        self.assertEqual(s.optimal_value, F(-5, 4))
+        self.assertEqual([v for _, v in s.values], [F(1), F(0), F(1), F(0)])
+        ciclado = [st for st in s.steps if any("Ciclado" in n for n in st.notes)]
+        self.assertEqual(len(ciclado), 1) # El tableau del paso donde se detecta repite el del paso 0 (misma base)
+        self.assertEqual(ciclado[0].basic_variables, s.steps[0].basic_variables)
+        self.assertIn("Bland", s.steps[ciclado[0].iteration].notes[0])
+    
+    def test_limite_de_iteraciones(self):
+        with mock.patch.object(big_m_simplex, "MAX_ITERATIONS", 1):
+            s = _solve("wyndor")
+        self.assertEqual(s.status, SolutionStatus.LIMITE_ITERACIONES)
+        self.assertEqual(s.values, ())
+        self.assertIsNone(s.optimal_value)
 
 if __name__ == "__main__":
     unittest.main()
