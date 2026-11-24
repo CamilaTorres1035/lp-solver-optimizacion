@@ -30,11 +30,11 @@ _FLIP = {
 }
 
 def _s(value) -> str:
-    """Texto de un número exacto: '3', '3/2', '-5'."""
+    """Texto de un número exacto (ASCII): '3', '3/2', '-5'. Usa ValorM.__str__"""
     return str(ValorM(value))
 
 def _num(value) -> str:
-    """Número exacto con signo menos tipográfico: '3/2','-5'"""
+    """Número exacto con signo menos tipográfico: '3/2', '−5'"""
     return str(F(value)).replace("-", "−")
 
 _REL_TEXT = {"<=": "≤", ">=": "≥", "=": "="} # Local pues domain no importa utils
@@ -63,7 +63,8 @@ def _fmt_row(row) -> str:
 def _fmt_point(point) -> str:
     return "(" + ", ".join(_s(v) for v in point) + ")"
 class BigMSimplexSolver:
-    """Implementa el Protocol Solver con el método de la Gran M"""
+    """Implementa el Protocol Solver con el método de la Gran M."""
+
     def _initialize(self, model: LPModel) -> None:
         n, m = model.n_variables, model.n_constraints
         sf = 1 if model.sense == OptimizationSense.MAXIMIZE else -1
@@ -72,7 +73,6 @@ class BigMSimplexSolver:
         if sf == -1:
             notes.append("Minimización: se resuelve Max W = −Z; la fila 0 es la de −Z")
 
-        # 1) RHS negativo: se multiplica por -1 y se invierte la relación
         rows = []
         for c in model.constraints:
             coeffs, rel, rhs, flipped = c.coefficients, c.relation, c.rhs, False
@@ -81,12 +81,11 @@ class BigMSimplexSolver:
                 coeffs = tuple(-a for a in coeffs)
                 rel, rhs, flipped = _FLIP[rel], -rhs, True
                 flip = (f"Restricción {c.original_index}: {before} se multiplicó por −1 "
-        f"→ {_text(coeffs, rel, rhs)}.")
+                        f"→ {_text(coeffs, rel, rhs)}.")
                 notes.append(flip)
                 flip_notes.append(flip)
             rows.append((coeffs, rel, rhs, flipped))
 
-        # 2) Columnas: Z, x1..xn y, por restricción i, S_i y luego R_i
         labels = ["Z"] + [f"x{j + 1}" for j in range(n)]
         slack, art = {}, {}
         for i, (_, rel, _, _) in enumerate(rows, start=1):
@@ -99,7 +98,6 @@ class BigMSimplexSolver:
         labels.append("RHS")
         width = len(labels)
 
-        # 3) Filas de restricciones (Fraction) y base inicial
         body, basis = [], []
         for i, (coeffs, rel, rhs, _) in enumerate(rows, start=1):
             row = [F(0)] * width
@@ -119,9 +117,8 @@ class BigMSimplexSolver:
             extra = {Relation.LESS_EQUAL: f" + S{i}",
                      Relation.GREAT_EQUAL: f" − S{i} + R{i}",
                      Relation.EQUAL: f" + R{i}"}[rel]
-            notes.append(f"Ec {i}: {_lhs(coeffs)}{extra} = {_s(rhs)}")
+            notes.append(f"Ec {i}: {_lhs(coeffs)}{extra} = {_num(rhs)}")
 
-        # 4) Fila 0: Z - c'x + M·ΣR = 0, con c' = sentido × c
         row0 = ([ValorM(sf)]
                 + [ValorM(-sf * c) for c in model.objective]
                 + [ValorM(0)] * (width - 1 - n))
@@ -129,7 +126,7 @@ class BigMSimplexSolver:
             row0[col] = M
         if art:
             notes.append(f"Fila 0 inicial: {_fmt_row(row0)}")
-        for i in art:                       # preparación: restar M × fila i
+        for i in art:
             row0 = [r0 - M * b for r0, b in zip(row0, body[i - 1])]
         if art:
             restas = " y ".join(f"M·(Ec {i})" for i in art)
@@ -142,8 +139,8 @@ class BigMSimplexSolver:
         self._sf = sf
         self._labels = labels
         self._tableau = (tuple(row0),) + tuple(body)
-        self._basis = basis                            # índice de columna por fila
-        self._initial_basis = tuple(basis)             # B^-1 se lee bajo estas columnas
+        self._basis = basis
+        self._initial_basis = tuple(basis)
         self._artificial = frozenset(art.values())
         self._candidates = tuple(j for j in range(1, width - 1)
                                  if j not in self._artificial)
@@ -151,7 +148,7 @@ class BigMSimplexSolver:
         self._notes = tuple(notes)
         self._flip_notes = tuple(flip_notes)
         self._steps: List[Step] = []
-        # Hu-10: Ciclado
+        # HU-10: ciclado
         self._bland = False
         self._seen = {frozenset(basis)}
         self._pending: List[str] = []
@@ -169,36 +166,40 @@ class BigMSimplexSolver:
         best = min(v for v, _ in negatives)
         tied = tuple(j for v, j in negatives if v == best)
         return tied[0], tied
-    
+
     def _check_optimality(self) -> bool:
         return self._entering_column()[0] is None
-    
-    def _ratios(self, column:int) -> Tuple[Optional[Fraction], ...]:
+
+    def _ratios(self, column: int) -> Tuple[Optional[Fraction], ...]:
         return tuple(
-            self._tableau[i][-1]/ self._tableau[i][column]
+            self._tableau[i][-1] / self._tableau[i][column]
             if self._tableau[i][column] > 0 else None
-            for i in range(1, self._model.n_constraints+1)
+            for i in range(1, self._model.n_constraints + 1)
         )
 
     def _leaving_row(self, ratios) -> Optional[int]:
-        """Menor razín; el empate lo resuelve la variable básica de menor índice de columna"""
+        """Menor razón; el empate lo gana la variable básica de menor índice de columna"""
         valid = [(r, i) for i, r in enumerate(ratios, start=1) if r is not None]
         if not valid:
             return None
         r_min = min(r for r, _ in valid)
-        return min((i for r, i in valid if r == r_min), key=lambda i: self._basis[i - 1])
-    
+        return min((i for r, i in valid if r == r_min),
+                   key=lambda i: self._basis[i - 1])
+
     def _tied_rows(self, ratios, row: int) -> List[int]:
         rows = [i for i, r in enumerate(ratios, start=1) if r == ratios[row - 1]]
         return sorted(rows, key=lambda i: self._basis[i - 1])
 
     def _find_pivot(self):
-        """Devuelve (pivote o None si no hay fila que salga, razones, justificación, notas)"""
+        """(pivote o None si no hay fila que salga, razones, justificación, notas)."""
         entering, tied = self._entering_column()
         ratios = self._ratios(entering)
         row = self._leaving_row(ratios)
         if row is None:
-            return None, ratios, (f"Entra {self._labels[entering]}, pero ninguna ecuación tiene coeficiente positivo en su columna: Z mejora sin límite (no acotado)"), () 
+            return None, ratios, (
+                f"Entra {self._labels[entering]}, pero ninguna ecuación tiene "
+                "coeficiente positivo en su columna: Z mejora sin límite (no acotado)."
+            ), ()
         notes = ()
         tied_rows = self._tied_rows(ratios, row)
         if len(tied_rows) > 1:
@@ -210,7 +211,8 @@ class BigMSimplexSolver:
                 f"Sale {self._labels[self._basis[row - 1]]} (menor índice); "
                 f"{', '.join(others)} {verb} en la base con valor 0.",
             )
-        return (PivotInfo(row=row, column=entering), ratios, self._justify(entering, tied, ratios, row, tied_rows), notes)
+        return (PivotInfo(row=row, column=entering), ratios,
+                self._justify(entering, tied, ratios, row, tied_rows), notes)
 
     def _justify(self, entering, tied, ratios, row, tied_rows) -> str:
         labels = self._labels
@@ -218,11 +220,12 @@ class BigMSimplexSolver:
             text = (f"Entra {labels[entering]}: regla de Bland (menor índice con "
                     f"coeficiente negativo en la fila 0: {self._tableau[0][entering]}).")
         else:
-            text = (f"Entra {labels[entering]}: es la variable con el coeficiente más " f"negativo en la fila 0 ({self._tableau[0][entering]}).")
+            text = (f"Entra {labels[entering]}: es la variable con el coeficiente más "
+                    f"negativo en la fila 0 ({self._tableau[0][entering]}).")
             if len(tied) > 1:
                 names = ", ".join(labels[j] for j in tied)
                 text += (f" Empate entre {names}: entra {labels[entering]} por la "
-                     "regla del menor índice.")
+                         "regla del menor índice.")
         parts = []
         for i, r in enumerate(ratios, start=1):
             a = self._tableau[i][entering]
@@ -235,7 +238,7 @@ class BigMSimplexSolver:
             text += (f" Empate de razones en {eqs}: sale {labels[self._basis[row - 1]]} "
                      "por la regla del menor índice.")
         return text + f" Pivote = {self._tableau[row][entering]}."
-    
+
     def _update(self, pivot: PivotInfo) -> None:
         self._tableau = pivot_matrix(self._tableau, pivot.row, pivot.column)
         self._basis[pivot.row - 1] = pivot.column
@@ -272,10 +275,10 @@ class BigMSimplexSolver:
         while True:
             if self._check_optimality():
                 return self._finish()
-            pivot, ratios, text, notes = self._find_pivot()   # 4 valores
+            pivot, ratios, text, notes = self._find_pivot()
             if pivot is None:
                 row = self._positive_artificial()
-                if row is not None:
+                if row is not None:   # rayo con artificial > 0: el modelo es no factible
                     return self._infeasible(row, ratios,
                                             "La variable que entra puede crecer sin límite, pero ")
                 self._build_step(None, ratios, text)          # rama simple, solución no acotada
@@ -292,11 +295,12 @@ class BigMSimplexSolver:
                     f"Se detuvo tras {MAX_ITERATIONS} iteraciones sin llegar al "
                     "óptimo (posible ciclado).",
                 )
-            self._build_step(pivot, ratios, text, notes)      # pasar notes
+            self._build_step(pivot, ratios, text, notes)
             self._update(pivot)
-    
+
+    # ---------------- resultado final ----------------
+
     def _point(self) -> Tuple[Fraction, ...]:
-        """Valores de las variables de decisión en la base actual"""
         n = self._model.n_variables
         point = [F(0)] * n
         for i, b in enumerate(self._basis, start=1):
@@ -304,40 +308,43 @@ class BigMSimplexSolver:
                 point[b - 1] = self._tableau[i][-1]
         return tuple(point)
 
+    def _positive_artificial(self) -> Optional[int]:
+        """Fila de una artificial básica con valor > 0 (certificado de no factibilidad)."""
+        for i, b in enumerate(self._basis, start=1):
+            if b in self._artificial and self._tableau[i][-1] > 0:
+                return i
+        return None
+
+    def _infeasible(self, row: int, ratios, prefix: str) -> Solution:
+        name = self._labels[self._basis[row - 1]]
+        self._build_step(None, ratios, (
+            f"{prefix}La artificial {name} sigue en la base con valor "
+            f"{self._tableau[row][-1]} > 0: la suma de artificiales no se puede "
+            "reducir → no factible."))
+        return self._solution(
+            SolutionStatus.NO_FACTIBLE,
+            "El modelo no tiene solución factible: no se pudo eliminar la "
+            f"variable artificial {name}.",
+        )
+
     def _alternative_column(self) -> Optional[int]:
-        """VNB (no artificial) con coeficiente 0 en la fila 0: indica óptimos alternos"""
+        """VNB (no artificial) con coeficiente 0 en la fila 0 final: indica óptimos alternos."""
         row0 = self._tableau[0]
         for j in self._candidates:
             if j not in self._basis and row0[j] == 0:
                 return j
         return None
-    
-    def _positive_artificial(self) -> Optional[int]:
-        """Fila de una variable artificial básica con valor > 0 (No factibilida)"""
-        for i, b in enumerate(self._basis, start=1):
-            if b in self._artificial and self._tableau[i][-1] > 0:
-                return i
-        return None
-    
-    def _infeasible(self, row: int, ratios, prefix:str) -> Solution:
-        name = self._labels[self._basis[row-1]]
-        self._build_step(None, ratios, (
-            f"{prefix}La artificial {name} sigue en la base con valor "
-            f"{self._tableau[row][-1]} > 0: la suma de artificiales no se puede "
-            "reducir → no factible."
-        ))
-        return self._solution(SolutionStatus.NO_FACTIBLE, 
-                              "El modelo no tiene solución factible: no se pudo eliminar la "
-                              f"varible artificial {name}.",)
 
     def _finish(self) -> Solution:
-        model, n, m = self._model, self._model.n_variables, self._model.n_constraints
-        # No factible
-        no_ratios = (None,)*m
+        model, m = self._model, self._model.n_constraints
+        no_ratios = (None,) * m
+
+        # No factible: una artificial con valor > 0 sigue en la base
         row = self._positive_artificial()
         if row is not None:
-            return self._infeasible(row, no_ratios,
-                                "Ningún coeficiente negativo en la fila 0. ")
+            return self._infeasible(row, no_ratios, "Ningún coeficiente negativo en la fila 0. ")
+
+        # Óptimo encontrado por el símplex
         point = self._point()
         z = self._sf * self._tableau[0][-1].to_fraction()
         basis = BasisInfo(
@@ -351,57 +358,65 @@ class BigMSimplexSolver:
         )
         values = tuple((f"x{j + 1}", v) for j, v in enumerate(point))
         slacks = _slacks(model, point)
-        
-        # Artificial básica con valor 0: no es infactible, se avisa
+
         notes: List[str] = [
             f"La artificial {self._labels[b]} queda en la base con valor 0 "
             "(restricción redundante o degeneración); se ignora en la sensibilidad."
             for b in self._basis if b in self._artificial
         ]
-        final_text = "Ningún coeficiente negativo en la fila 0 → la solución es óptima."
+        final_text = ("Ningún coeficiente negativo en la fila 0 → la solución es óptima. "
+              f"Z = {_s(z)} con "
+              + ", ".join(f"x{j+1} = {_s(v)}" for j, v in enumerate(point)) + ".")
         alt_values: Tuple[Tuple[str, Fraction], ...] = ()
         final_notes: List[str] = []
-        
-        # Optimos múltiples
+
         column = self._alternative_column()
         if column is not None:
-            name = self._ratios(column)
+            name = self._labels[column]
             ratios = self._ratios(column)
             row = self._leaving_row(ratios)
-            if row is not None and ratios[row - 1] > 0:
-            leaving = self._labels[self._basis[row - 1]]
-            self._build_step(
-                PivotInfo(row=row, column=column), ratios,
-                f"{final_text} Como la variable no básica {name} tiene "
-                "coeficiente 0 en la fila 0, hay óptimos alternativos. Pivote "
-                f"extra: entra {name}, sale {leaving} (razón mínima "
-                f"{ratios[row - 1]}); Z no cambia.",
-                notes + ["Óptimos múltiples: se hace un pivote extra automático."])
-            notes = []                       # para no repetirlas en el paso final
-            self._update(PivotInfo(row=row, column=column))
-            other = self._point()
-            alt_values = tuple((f"x{j + 1}", v) for j, v in enumerate(other))
-            final_text = ("Segundo vértice óptimo, con el mismo valor de Z. "
-                          "Todo punto del segmento entre ambos vértices es óptimo.")
-            final_notes.append(
-                f"Óptimos múltiples: Z = {_s(z)} en A = {_fmt_point(point)} y "
-                f"B = {_fmt_point(other)}. Todo x = λA + (1−λ)B con 0 ≤ λ ≤ 1 "
-                "es óptimo.")
-        
+            if row is None:
+                final_notes.append(
+                    f"Óptimos múltiples: {name} es no básica con coeficiente 0 en la "
+                    "fila 0 y su columna no tiene coeficientes positivos: el "
+                    "conjunto óptimo es no acotado.")
+            elif ratios[row - 1] > 0:
+                # Pivote extra automático: segundo vértice óptimo
+                leaving = self._labels[self._basis[row - 1]]
+                self._build_step(
+                    PivotInfo(row=row, column=column), ratios,
+                    f"{final_text} Como la variable no básica {name} tiene "
+                    "coeficiente 0 en la fila 0, hay óptimos alternativos. Pivote "
+                    f"extra: entra {name}, sale {leaving} (razón mínima "
+                    f"{ratios[row - 1]}); Z no cambia.",
+                    notes + ["Óptimos múltiples: se hace un pivote extra automático."])
+                notes = []
+                self._update(PivotInfo(row=row, column=column))
+                other = self._point()
+                alt_values = tuple((f"x{j + 1}", v) for j, v in enumerate(other))
+                final_text = ("Segundo vértice óptimo, con el mismo valor de Z. "
+                              "Todo punto del segmento entre ambos vértices es óptimo.")
+                final_notes.append(
+                    f"Óptimos múltiples: Z = {_s(z)} en A = {_fmt_point(point)} y "
+                    f"B = {_fmt_point(other)}. Todo x = λA + (1−λ)B con 0 ≤ λ ≤ 1 "
+                    "es óptimo.")
+            # razón 0: el pivote extra no cambia de vértice; no hay otro óptimo distinto
+
         self._build_step(None, no_ratios, final_text, notes)
         message = f"Solución óptima: Z = {_s(z)}."
         if alt_values:
-                message += " Hay óptimos múltiples (infinitos sobre el segmento entre dos vértices)."
+            message += " Hay óptimos múltiples (infinitos sobre el segmento entre dos vértices)"
         return self._solution(
             SolutionStatus.OPTIMA, message, values=values, z=z, slacks=slacks,
             basis=basis, alt_values=alt_values, extra_notes=final_notes,
         )
 
-    def _solution(self, status, message, values=(), z=None, slacks=(), basis=None, alt_values=(), extra_notes=()):
+    def _solution(self, status, message, values=(), z=None, slacks=(), basis=None,
+                  alt_values=(), extra_notes=()):
         return Solution(
             status=status, values=values, optimal_value=z, slacks=slacks,
             alt_values=alt_values, steps=tuple(self._steps),
-            notes=self._flip_notes + tuple(extra_notes),          # transformación visible en Directa
+            notes=self._flip_notes + tuple(extra_notes),
             message=message, basis_info=basis,
             model_fingerprint=hash(self._model),
         )
