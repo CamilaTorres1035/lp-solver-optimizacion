@@ -3,11 +3,13 @@ from fractions import Fraction as F
 from unittest import mock
 
 from domain.model.lp_model import build_model
+from domain.model.enums import Relation
 from domain.solver import big_m_simplex
 from domain.solver.big_m_simplex import BigMSimplexSolver, _lhs
 from domain.solver.linalg import pivot_matrix
 from domain.solver.solution import SolutionStatus
 from domain.solver.symbolic import ValorM
+from domain.solver.graphical_solver import GraphicalSolver
 from utils.examples import get_example, list_all_examples
 
 
@@ -23,7 +25,25 @@ def _path(solution):
     return [(s.column_labels[s.pivot.column], s.basic_variables[s.pivot.row - 1])
             for s in solution.steps if s.pivot]
 
+def _points(solution):
+    points = {tuple(v for _, v in solution.values)}
+    if solution.alt_values:
+        points.add(tuple(v for _, v in solution.alt_values))
+    return points
 
+def _slacks_at(model, values):
+    """Holgura/exceso según la definición, sobre el modelo ORIGINAL del usuario."""
+    point = tuple(v for _, v in values)
+    result = []
+    for c in model.constraints:
+        lhs = sum((a * x for a, x in zip(c.coefficients, point)), F(0))
+        if c.relation == Relation.LESS_EQUAL:
+            result.append(c.rhs - lhs)
+        elif c.relation == Relation.GREAT_EQUAL:
+            result.append(lhs - c.rhs)
+        else:
+            result.append(F(0))
+    return tuple(result)
 class TestGranMSoloMenorIgual(unittest.TestCase):
     def test_wyndor_camino_y_resultado(self):
         s = _solve("wyndor")
@@ -229,16 +249,72 @@ class TestCasosEspeciales(unittest.TestCase):
         self.assertEqual(s.status, SolutionStatus.LIMITE_ITERACIONES)
         self.assertEqual(s.values, ())
         self.assertIsNone(s.optimal_value)
+        self.assertIsNone(s.steps[-1].pivot)
+        self.assertEqual(s.steps[-1].ratios, (F(4), None, F(2)))   # razones con pivote None
+        self.assertIn("límite de 1 iteraciones", s.steps[-1].justification)
 
     # --- transversal ---
     def test_ningun_ejemplo_lanza_excepcion(self):
         for ex in list_all_examples():
             with self.subTest(ex.key):
                 s = BigMSimplexSolver().solve(ex.to_model())
-                self.assertIn(s.status, set(SolutionStatus))
+                self.assertIn(s.status, {
+                        SolutionStatus.OPTIMA, SolutionStatus.NO_FACTIBLE,
+                        SolutionStatus.NO_ACOTADA, SolutionStatus.LIMITE_ITERACIONES,
+                })
                 self.assertGreater(len(s.steps), 0)
                 if s.status != SolutionStatus.OPTIMA:
                     self.assertEqual(s.values, ())
+    
+    def test_razon_cero_sin_empate_no_genera_nota(self):
+        s = _solve("rubrica_7")
+        self.assertEqual(s.steps[1].ratios, (F(8), F(0)))
+        self.assertEqual(s.steps[1].pivot.row, 2)
+        self.assertFalse(any("Degeneración" in n for n in s.steps[1].notes))
+    
+    def test_contrato_de_step_en_todos_los_ejemplos(self):
+        for ex in list_all_examples():
+            with self.subTest(ex.key):
+                model = ex.to_model()
+                s = BigMSimplexSolver().solve(model)
+                m = model.n_constraints
+                for k, step in enumerate(s.steps):
+                    self.assertEqual(step.iteration, k)
+                    self.assertEqual(len(step.tableau), m + 1)
+                    self.assertEqual(len(step.row_labels), m + 1)
+                    self.assertEqual(len(step.basic_variables), m)
+                    self.assertEqual(len(step.ratios), m)
+                    self.assertEqual(len(step.column_labels), len(step.tableau[0]))
+                    for i, name in enumerate(step.basic_variables, start=1):
+                        col = step.column_labels.index(name)
+                        self.assertEqual(step.tableau[i][col], 1)   # columna unitaria
+                        self.assertEqual(step.tableau[0][col], 0)   # coste reducido nulo
+                    if step.pivot is None:
+                        self.assertEqual(k, len(s.steps) - 1)       # terminal = último
+                    else:
+                        entering = step.column_labels[step.pivot.column]
+                        self.assertFalse(entering.startswith("R") and entering[1:].isdigit())
+                        self.assertEqual(
+                            s.steps[k + 1].tableau,
+                            pivot_matrix(step.tableau, step.pivot.row, step.pivot.column),
+                        )
+    def test_paridad_grafico_y_gran_m(self):
+        for ex in list_all_examples():
+            model = ex.to_model()
+            # el gráfico exige n=2; con objetivo constante los métodos difieren por decisión
+            if model.n_variables != 2 or all(c == 0 for c in model.objective):
+                continue
+            with self.subTest(ex.key):
+                g = GraphicalSolver().solve(model)
+                s = BigMSimplexSolver().solve(model)
+                self.assertEqual(s.status, g.status)
+                self.assertEqual(s.optimal_value, g.optimal_value)
+                if s.status == SolutionStatus.OPTIMA:
+                    # el conjunto óptimo coincide; el orden NO es semántico
+                    self.assertEqual(_points(s), _points(g))
+                    # cada método reporta holguras de SU vértice principal
+                    self.assertEqual(s.slacks, _slacks_at(model, s.values))
+                    self.assertEqual(g.slacks, _slacks_at(model, g.values))
 
 
 if __name__ == "__main__":
