@@ -36,8 +36,8 @@ class TestExamplesSeparation(unittest.TestCase):
         )
 
     def test_public_examples_count(self):
-        """Debe haber exactamente 7 ejemplos públicos bien documentados"""
-        self.assertEqual(len(PUBLIC_EXAMPLES), 7)
+        """7 clásicos + Beale: el ciclado se demuestra en vivo (HU-10)."""
+        self.assertEqual(len(PUBLIC_EXAMPLES), 8)
 
 
 class TestPublicExamples(unittest.TestCase):
@@ -84,6 +84,20 @@ class TestPublicExamples(unittest.TestCase):
                 model = example.to_model()
                 self.assertEqual(model.n_variables, len(example.objective))
                 self.assertEqual(model.n_constraints, len(example.constraints))
+    
+    def test_beale_es_el_modelo_del_test_de_ciclado(self):
+        """El ejemplo de la demo y el del test de dominio no pueden divergir"""
+        model = get_example("beale_ciclado").to_model()
+        self.assertEqual(model.sense.value, "min")
+        self.assertEqual(
+            model.objective,
+            (Fraction(-3, 4), Fraction(20), Fraction(-1, 2), Fraction(6)),
+        )
+        self.assertEqual(
+            model.constraints[0].coefficients,
+            (Fraction(1, 4), Fraction(-8), Fraction(-1), Fraction(9)),
+        )
+        self.assertEqual(model.constraints[2].rhs, Fraction(1))
 
 
 class TestRubricExamples(unittest.TestCase):

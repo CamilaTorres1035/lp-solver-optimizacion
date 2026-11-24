@@ -1,10 +1,14 @@
 """
 Ejemplos precargados de problemas de Programación Lineal
 
-Se separan en dos listas:
-- PUBLIC_EXAMPLES: ejemplos clásicos reconocibles que se muestran en la UI
-- RUBRIC_EXAMPLES: problemas de la rúbrica, solo para pruebas internas
-- ALL_EXAMPLES: unión de ambas (uso exclusivo en tests)
+Las listas siguen separadas por origen:
+- PUBLIC_EXAMPLES: problemas clásicos reconocibles (Wyndor, dieta, Beale...)
+- RUBRIC_EXAMPLES: los casos de la rúbrica de la asignatura
+- ALL_EXAMPLES: unión de ambas
+
+La UI muestra las dos listas agrupadas ("Clásicos" / "Rúbrica"), porque los
+criterios de HU-06 y HU-10 piden resolver y demostrar todos los ejemplos.
+La separación se conserva para las pruebas y para etiquetar el selector.
 """
 from dataclasses import dataclass
 from typing import Tuple
@@ -154,10 +158,11 @@ PUBLIC_EXAMPLES: Tuple[LPExample, ...] = (
     ),
     LPExample(
         key="empate_entrar_wyndor",
-        name="Problema degenerado (empate al entrar)",
+        name="Empate al entrar (Wyndor)",
         description=(
-            "Variante de Wyndor con empate en el criterio de la variable "
-            "que entra. Se resuelve por la regla del menor índice."
+            "Variante de Wyndor con empate en el coeficiente más negativo de la "
+            "fila 0: se resuelve por la regla del menor índice. No es degeneración; "
+            "la degeneración es empate en la razón mínima."
         ),
         sense="max",
         objective=("3", "3"),
@@ -167,11 +172,28 @@ PUBLIC_EXAMPLES: Tuple[LPExample, ...] = (
             ConstraintExample(("3", "2"), "<=", "18"),
         ),
     ),
+    LPExample(
+        key="beale_ciclado",
+        name="Ciclado (ejemplo de Beale)",
+        description=(
+            "Ejemplo clásico de Beale: con la regla de Dantzig el símplex vuelve a "
+            "la base inicial y cicla indefinidamente. Al detectar la base repetida, "
+            "Gran M cambia a la regla de Bland y termina en x = (1, 0, 1, 0) con "
+            "Z = −5/4."
+        ),
+        sense="min",
+        objective=("-3/4", "20", "-1/2", "6"),
+        constraints=(
+            ConstraintExample(("1/4", "-8", "-1", "9"), "<=", "0"),
+            ConstraintExample(("1/2", "-12", "-1/2", "3"), "<=", "0"),
+            ConstraintExample(("0", "0", "1", "0"), "<=", "1"),
+        ),
+    ),
 )
 
 
 # EJEMPLOS DE RÚBRICA (solo para pruebas internas del equipo)
-#!Estos NO se muestran en la UI
+# Se muestran en la UI bajo el grupo "Rúbrica" (HU-06 / HU-10)
 
 RUBRIC_EXAMPLES: Tuple[LPExample, ...] = (
     LPExample(

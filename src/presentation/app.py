@@ -19,7 +19,8 @@ cambia de opción...). Por eso el archivo está organizado así:
 Estado compartido (st.session_state)
 - model_defined : bool, True si hay un modelo confirmado y listo para resolver.
 - model         : el modelo confirmado (objeto de dominio), o None.
-- solution      : la solución calculada, o None si aún no se resolvió.
+- solutions     : dict {SolverMethod: Solution} con lo resuelto por cada método.
+- current_step  : índice de iteración para la navegación paso a paso (HU-08).
 - number_format : "Fracción" | "Decimal"; lo leen los helpers de formato.
 
 """

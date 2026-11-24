@@ -11,7 +11,7 @@ Cómo se resuelve:
 Decisiones aprobadas:
 - Se muestran todos los vértices óptimos detectados
 - Si hay dos extremos óptimos, se informa el segmento con infinitos óptimos
-- El orden values/alt_values es provisional por coordenadas hasta que Gran M fije el criterio definitivo
+- values/alt_values siguen el orden lexicográfico de los vértices; el orden no es semántico (Gran M usa el orden del símplex)
 - Si la función objetivo es constante, se muestra nota y no se dibuja segmento
 - Si Z permanece constante a lo largo de una semirrecta de la región, se informa que hay infinitos óptimos (ej.: Max x1; x1 <= 4)
 """

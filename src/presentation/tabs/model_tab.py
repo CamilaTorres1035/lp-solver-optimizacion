@@ -22,11 +22,20 @@ import streamlit as st
 
 from application.use_cases.invalidate_results import invalidate_results
 from application.use_cases.validate_model import parse_fraction, validate_model
-from utils.examples import get_example, list_public_examples
+from utils.examples import PUBLIC_EXAMPLES, get_example, list_all_examples
 from utils.formatting import FRACTION_MODE, format_number, subscript
 
 # Helpers de formato
 # ==================
+
+_PUBLIC_KEYS = frozenset(example.key for example in PUBLIC_EXAMPLES)
+
+def _example_label(key: str) -> str:
+    """Etiqueta del selector con el grupo al que pertenece el ejemplo."""
+    if not key:
+        return "- Selecciona un ejemplo -"
+    group = "Clásicos" if key in _PUBLIC_KEYS else "Rúbrica"
+    return f"{group} · {get_example(key).name}"
 
 def _format_number_text(text: str) -> str:
     """
@@ -118,19 +127,13 @@ def render_model_tab() -> None:
     version = st.session_state.form_version
     
     st.subheader("Cargar ejemplo")
-    
-    public_examples = list_public_examples()
-    example_keys = [""] + [ex.key for ex in public_examples]
-    
+    example_keys = [""] + [ex.key for ex in list_all_examples()]
     selected_key = st.selectbox(
-            "Selecciona un problema clásico para cargar",
-            options=example_keys,
-            format_func=lambda key: (
-                "- Selecciona un ejemplo -" if key == ""
-                else get_example(key).name
-            ),
-            key=f"example_selector_{version}",
-        )
+        "Selecciona un problema para cargar",
+        options=example_keys,
+        format_func=_example_label,
+        key=f"example_selector_{version}",
+    )
     
     if selected_key:
         example = get_example(selected_key)
