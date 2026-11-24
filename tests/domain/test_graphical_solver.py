@@ -227,6 +227,19 @@ class TestGraphicalSolver(unittest.TestCase):
         model = _model("max", ["3", "5"], WYNDOR_ROWS)
         self.assertEqual(GraphicalSolver().solve(model).model_fingerprint,
                          hash(model))
+    
+    def test_ventana_cuadrada_misma_escala(self):
+        for rows in (
+            WYNDOR_ROWS,
+            [(["1", "-1"], "<=", "1"), (["-1", "1"], "<=", "2")],
+            [(["1", "1"], ">=", "2")],
+        ):
+            with self.subTest(rows=rows):
+                xmin, xmax, ymin, ymax = _solve(
+                    "max", ["3", "5"], rows
+                ).graphical.window
+                self.assertEqual(xmax - xmin, ymax - ymin)
+                self.assertEqual(xmin, ymin)
 
 
 if __name__ == "__main__":

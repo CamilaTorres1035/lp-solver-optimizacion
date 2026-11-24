@@ -12,6 +12,7 @@ La figura contiene:
 - el segmento resaltado si hay óptimos múltiples
 """
 from fractions import Fraction
+import math
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import plotly.graph_objects as go
@@ -62,13 +63,25 @@ def build_graphical_figure(
             fig, result.isoprofit_segment, result.isoprofit_z, sense, number_format
         )
 
+    span = max(xmax - xmin, ymax - ymin)
+    step = float(_nice_step(span))
+    grid = dict(
+        dtick=step, tick0=0.0, showgrid=True,
+        gridcolor="rgba(120,120,120,0.18)",
+        zeroline=True, zerolinewidth=2, zerolinecolor="rgba(80,80,80,0.55)",
+        ticks="outside", ticklen=4, mirror=True,
+        constrain="domain", constraintoward="center",
+    )
     fig.update_layout(
-        xaxis=dict(title="x₁", range=[xmin, xmax], zeroline=True, zerolinewidth=2),
-        yaxis=dict(title="x₂", range=[ymin, ymax], zeroline=True, zerolinewidth=2, scaleanchor="x", scaleratio=1,),
+        xaxis=dict(title="x₁", range=[xmin, xmax], **grid),
+        yaxis=dict(
+            title="x₂", range=[ymin, ymax],
+            scaleanchor="x", scaleratio=1, **grid,
+        ),
         hovermode="closest",
         height=580,
-        margin=dict(l=40, r=20, t=30, b=40),
-        legend=dict(orientation="h", yanchor="top", y=-0.15, x=0),
+        margin=dict(l=56, r=24, t=24, b=56),
+        legend=dict(orientation="h", yanchor="top", y=-0.18, x=0),
         template="plotly_white",
     )
     return fig
@@ -255,6 +268,18 @@ def _twice_area(points: Sequence[Point]) -> Fraction:
         x2, y2 = points[(i + 1) % len(points)]
         total += x1 * y2 - x2 * y1
     return total
+
+def _nice_step(span: Fraction) -> Fraction:
+    """Paso redondo (1, 2, 5 × 10^k) que da unas 8 divisiones en el eje."""
+    target = float(span) / 8
+    if target <= 0:
+        return Fraction(1)
+    base = Fraction(10) ** math.floor(math.log10(target))
+    for factor in (1, 2, 5, 10):
+        step = base * factor
+        if float(step) >= target:
+            return step
+    return base * 10
 
 def hidden_vertices_count(result: GraphicalResult) -> int:
     """Cuántos vértices de la tabla no se dibujan por caer fuera de la ventana."""
