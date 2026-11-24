@@ -272,7 +272,11 @@ class BigMSimplexSolver:
                 return self._finish()
             pivot, ratios, text, notes = self._find_pivot()   # 4 valores
             if pivot is None:
-                self._build_step(None, ratios, text)          # rama simple, sin rayo
+                row = self._positive_artificial()
+                if row is not None:
+                    return self._infeasible(row, ratios,
+                                            "La variable que entra puede crecer sin límite, pero ")
+                self._build_step(None, ratios, text)          # rama simple, solución no acotada
                 return self._solution(
                     SolutionStatus.NO_ACOTADA,
                     "La solución es no acotada: la función objetivo puede mejorar "
@@ -288,20 +292,32 @@ class BigMSimplexSolver:
                 )
             self._build_step(pivot, ratios, text, notes)      # pasar notes
             self._update(pivot)
+    
+    def _positive_artificial(self) -> Optional[int]:
+        """Fila de una variable artificial básica con valor > 0 (No factibilida)"""
+        for i, b in enumerate(self._basis, start=1):
+            if b in self._artificial and self._tableau[i][-1] > 0:
+                return i
+        return None
+    
+    def _infeasible(self, row: int, ratios, prefix:str) -> Solution:
+        name = self._labels[self._basis[row-1]]
+        self._build_step(None, ratios, (
+            f"{prefix}La artificial {name} sigue en la base con valor "
+            f"{self._tableau[row][-1]} > 0: la suma de artificiales no se puede "
+            "reducir → no factible."
+        ))
+        return self._solution(SolutionStatus.NO_FACTIBLE, 
+                              "El modelo no tiene solución factible: no se pudo eliminar la "
+                              f"varible artificial {name}.",)
 
     def _finish(self) -> Solution:
         model, n, m = self._model, self._model.n_variables, self._model.n_constraints
-        for i, b in enumerate(self._basis, start=1):
-            if b in self._artificial and self._tableau[i][-1] > 0:
-                self._build_step(None, (None,) * m, (
-                    "Ningún coeficiente negativo en la fila 0, pero la artificial "
-                    f"{self._labels[b]} sigue en la base con valor "
-                    f"{self._tableau[i][-1]} > 0 → no factible."))
-                return self._solution(
-                    SolutionStatus.NO_FACTIBLE,
-                    "El modelo no tiene solución factible: no se pudo eliminar la "
-                    f"variable artificial {self._labels[b]}.",
-                )
+        no_ratios = (None,)*m
+        row = self._positive_artificial()
+        if row is not None:
+            return self._infeasible(row, no_ratios,
+                                "Ningún coeficiente negativo en la fila 0. ")
         self._build_step(None, (None,) * m, (
             "Ningún coeficiente negativo en la fila 0 → la solución es óptima."))
         point = [F(0)] * n

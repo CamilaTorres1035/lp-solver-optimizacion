@@ -124,6 +124,12 @@ class TestGranMEstabilidad(unittest.TestCase):
 
 class TestCasosEspeciales(unittest.TestCase):
     """HU-10: cada caso especial termina con un estado, nunca con una excepción."""
+    def test_rayo_con_artificial_positiva_es_no_factible_no_no_acotado(self):
+    # x2 podría crecer sin límite, pero x1 <= 2 y x1 >= 5 son incompatibles
+        s = _solve_model("max", ["0", "1"], [
+            (["1", "0"], "<=", "2"), (["1", "0"], ">=", "5")])
+        self.assertEqual(s.status, SolutionStatus.NO_FACTIBLE)
+
     def test_rubrica_7_degenerado(self):
         s = _solve("rubrica_7")
         self.assertEqual(s.status, SolutionStatus.OPTIMA)
