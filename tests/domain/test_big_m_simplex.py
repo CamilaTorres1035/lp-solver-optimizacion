@@ -252,6 +252,8 @@ class TestCasosEspeciales(unittest.TestCase):
         self.assertIsNone(s.steps[-1].pivot)
         self.assertEqual(s.steps[-1].ratios, (F(4), None, F(2)))   # razones con pivote None
         self.assertIn("límite de 1 iteraciones", s.steps[-1].justification)
+        # se detiene en la iteración 1, cuando iba a entrar x1 (razones 4, —, 2)
+        self.assertEqual(s.steps[-1].column_labels[s.steps[-1].entering_column], "x1")
 
     # --- transversal ---
     def test_ningun_ejemplo_lanza_excepcion(self):
@@ -289,9 +291,19 @@ class TestCasosEspeciales(unittest.TestCase):
                         col = step.column_labels.index(name)
                         self.assertEqual(step.tableau[i][col], 1)   # columna unitaria
                         self.assertEqual(step.tableau[0][col], 0)   # coste reducido nulo
+                    # setup_notes: solo en el paso 0 y siempre dentro de notes
+                    if k == 0:
+                        self.assertTrue(step.setup_notes)
+                        self.assertEqual(step.notes[:len(step.setup_notes)], step.setup_notes)
+                    else:
+                        self.assertEqual(step.setup_notes, ())
                     if step.pivot is None:
                         self.assertEqual(k, len(s.steps) - 1)       # terminal = último
+                        # sin pivote: entering_column solo si el paso terminal no es óptimo
+                        if step.entering_column is not None:
+                            self.assertNotEqual(s.status, SolutionStatus.OPTIMA)
                     else:
+                        self.assertEqual(step.entering_column, step.pivot.column)
                         entering = step.column_labels[step.pivot.column]
                         self.assertFalse(entering.startswith("R") and entering[1:].isdigit())
                         self.assertEqual(
@@ -315,6 +327,40 @@ class TestCasosEspeciales(unittest.TestCase):
                     # cada método reporta holguras de SU vértice principal
                     self.assertEqual(s.slacks, _slacks_at(model, s.values))
                     self.assertEqual(g.slacks, _slacks_at(model, g.values))
+
+
+class TestDatosParaLaVista(unittest.TestCase):
+    """Campos de Step que usa la interfaz: entering_column (HU-09) y setup_notes (HU-15)."""
+
+    def test_no_acotado_informa_la_columna_que_entra(self):
+        last = _solve("rubrica_5").steps[-1]
+        self.assertIsNone(last.pivot)
+        self.assertEqual(last.column_labels[last.entering_column], "x2")
+
+    def test_rayo_no_factible_informa_la_columna_que_entra(self):
+        s = _solve_model("max", ["0", "1"], [
+            (["1", "0"], "<=", "2"), (["1", "0"], ">=", "5")])
+        last = s.steps[-1]
+        self.assertEqual(s.status, SolutionStatus.NO_FACTIBLE)
+        self.assertIsNotNone(last.entering_column)
+
+    def test_tableau_final_sin_columna_que_entra(self):
+        for key in ("wyndor", "rubrica_4", "rubrica_6"):
+            with self.subTest(key):
+                self.assertIsNone(_solve(key).steps[-1].entering_column)
+
+    def test_setup_notes_es_la_forma_estandar(self):
+        setup = _solve("rubrica_2").steps[0].setup_notes
+        self.assertTrue(setup[0].startswith("Minimización"))
+        self.assertTrue(any("multiplicó por −1" in n for n in setup))
+        self.assertEqual(sum(n.startswith("Ec ") for n in setup), 3)
+        self.assertTrue(any(n.startswith("Preparación de la fila 0") for n in setup))
+
+    def test_nota_de_degeneracion_no_es_parte_de_la_forma_estandar(self):
+        step0 = _solve("rubrica_7").steps[0]
+        extra = [n for n in step0.notes if n not in step0.setup_notes]
+        self.assertEqual(len(extra), 1)
+        self.assertTrue(extra[0].startswith("Degeneración"))
 
 
 if __name__ == "__main__":
