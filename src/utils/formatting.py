@@ -4,7 +4,9 @@ Formato compartido de números y expresiones (Fracción / Decimal).
 El modo de formato lo decide quien llama (la UI lo lee de `st.session_state.number_format`).
 """
 from fractions import Fraction
-from typing import Sequence, Tuple
+from typing import Sequence, Tuple, Union
+
+from domain.solver.symbolic import ValorM
 
 FRACTION_MODE = "Fracción"
 DECIMAL_MODE = "Decimal"
@@ -31,6 +33,36 @@ def format_number(value: Fraction, mode: str = FRACTION_MODE) -> str:
     if value.denominator == 1:
         return str(value.numerator)
     return f"{value.numerator}/{value.denominator}"
+
+
+def format_value(value: Union[int, Fraction, ValorM], mode: str = FRACTION_MODE) -> str:
+    """
+    Como format_number, pero también acepta ValorM (a + bM), que aparece en la
+    fila 0 del tableau de Gran M. La M va primero, como en clase:
+    Fracción: '2M + 3', '-11/10 M + 2/5', '-M', 'M - 5' (igual que str(ValorM)).
+    Decimal:  '2M + 3', '-1.1M + 0.4', '-M', 'M - 5'.
+    """
+    if not isinstance(value, ValorM):
+        return format_number(value, mode)
+    a, b = value.constant, value.m_coeff
+    if b == 0:
+        return format_number(a, mode)
+
+    magnitude = abs(b)
+    if magnitude == 1:
+        m_term = "M"
+    elif mode == FRACTION_MODE and magnitude.denominator != 1:
+        m_term = f"{format_number(magnitude, mode)} M"   # '11/10 M': el espacio evita leer 10M
+    else:
+        m_term = f"{format_number(magnitude, mode)}M"
+    if b < 0:
+        m_term = "-" + m_term
+
+    if a == 0:
+        return m_term
+    if a > 0:
+        return f"{m_term} + {format_number(a, mode)}"
+    return f"{m_term} - {format_number(-a, mode)}"
 
 
 def format_point(point: Tuple[Fraction, Fraction], mode: str = FRACTION_MODE) -> str:

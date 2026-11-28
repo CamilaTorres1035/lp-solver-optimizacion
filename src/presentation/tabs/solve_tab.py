@@ -4,42 +4,58 @@ Pestaña "Resolver"
 Flujo en cada ejecución:
     1. Si no hay modelo confirmado, se pide definirlo
     2. SELECTOR de método (siempre visible). El aviso de n ≠ 2 sale AL SELECCIONAR el método gráfico, sin esperar a pulsar Resolver
-    3. Botón Resolver -> caso de uso `solve_lp` -> `st.session_state.solutions[method]`
-    4. Resultados: estado, valores, holguras y notas; en el gráfico: figura de Plotly y tabla de vértices (HU-04)
+    3. SELECTOR de modo Directa / Paso a paso (HU-15), solo en los métodos símplex: el gráfico no tiene iteraciones
+    4. Botón Resolver -> caso de uso `solve_lp` -> `st.session_state.solutions[method]`
+    5. Resultados
+       - Gráfico: figura de Plotly, tabla de vértices y solución final (HU-04)
+       - Símplex en Paso a paso: forma estándar, navegación (HU-08), tableau resaltado y justificación (HU-09) y la solución final
+       - Símplex en Directa: solo la solución final
+
+Cambiar de modo o de iteración solo vuelve a dibujar: el solver corre únicamente al pulsar Resolver (HU-08 y HU-15).
 
 Estado que usa (st.session_state)
 - model_defined / model : los escribe model_tab
 - solutions             : dict {SolverMethod: Solution} con lo resuelto por método
 - current_step          : índice de iteración para HU-08 (se reinicia al resolver)
+- solve_mode_choice     : modo elegido; sobrevive aunque el selector se oculte con el método gráfico
 - results_invalidated   : aviso "debes resolver nuevamente" (HU-05)
 - number_format         : "Fracción" | "Decimal"
 
 Una solución solo se muestra si coincide con el método elegido y con el modelo actual (`model_fingerprint`), para no enseñar resultados desactualizados (HU-05)
-La navegación paso a paso y el tableau llegan con HU-08 y HU-09.
 """
 
 import streamlit as st
-from html import escape as _escape
 
+from application.step_navigation import build_tableau_view
 from application.use_cases.solve_lp import solve_lp
+from domain.model.enums import OptimizationSense
 from domain.model.lp_model import LPModel
-from domain.model.enums import Relation
 from domain.solver.solution import (
     Solution,
     SolutionStatus,
 )
 from domain.solver.solver_factory import SolverMethod
+from domain.solver.step import Step
+from presentation.components.navigation import render_navigator
 from presentation.components.plot_view import (
     build_graphical_figure,
     build_vertices_rows,
     hidden_vertices_count,
 )
+from presentation.components.solution_view import build_slack_rows
+from presentation.components.tableau_view import legend_html, render_tableau_html
 from utils.formatting import FRACTION_MODE, format_number, subscript
 
 _METHOD_LABELS = {
     SolverMethod.GRAFICO: "Gráfico",
     SolverMethod.GRAN_M: "Gran M",
 }
+
+MODE_DIRECT = "Directa"
+MODE_STEP_BY_STEP = "Paso a paso"
+_MODES = (MODE_DIRECT, MODE_STEP_BY_STEP)
+_MODE_KEY = "solve_mode"                 # clave del widget
+_MODE_CHOICE_KEY = "solve_mode_choice"   # valor que persiste (espejo, ver _render_mode_selector)
 
 
 # Render principal
@@ -75,6 +91,8 @@ def render_solve_tab() -> None:
             icon=":material/block:",
         )
 
+    mode = _render_mode_selector(method)
+
     if st.button(
         "Resolver",
         type="primary",
@@ -92,7 +110,33 @@ def render_solve_tab() -> None:
     if solution.graphical is not None:
         _render_graphical_result(solution, model, number_format)
     else:
-        _render_simplex_result(solution, model, number_format)
+        _render_simplex_result(solution, model, number_format, mode)
+
+
+def _render_mode_selector(method: SolverMethod):
+    """
+    Selector Directa / Paso a paso (HU-15). Devuelve el modo, o None en el gráfico.
+
+    Streamlit borra el estado de un widget que deja de dibujarse; como el selector se oculta con el método gráfico, el valor elegido se guarda aparte (`solve_mode_choice`) y se copia al widget antes de crearlo. Por defecto: Paso a paso.
+    """
+    if method == SolverMethod.GRAFICO:
+        return None
+    choice = st.session_state.get(_MODE_CHOICE_KEY, MODE_STEP_BY_STEP)
+    st.session_state[_MODE_KEY] = choice
+    st.radio(
+        "Modo de solución",
+        options=_MODES,
+        horizontal=True,
+        key=_MODE_KEY,
+        on_change=_remember_mode,
+        help="Directa: solo el resultado. Paso a paso: forma estándar e iteraciones. "
+             "Cambiar de modo no vuelve a resolver el modelo.",
+    )
+    return st.session_state[_MODE_KEY]
+
+
+def _remember_mode() -> None:
+    st.session_state[_MODE_CHOICE_KEY] = st.session_state[_MODE_KEY]
 
 
 # Estado
@@ -159,15 +203,29 @@ def _render_graphical_result(
         hide_index=True,
         width="stretch",
     )
-    
+
     _render_slacks(solution, model, number_format)
 
-# Resultados del Gran M 
+# Resultados del Gran M
 # ======================
 
-def _render_simplex_result(solution: Solution, model: LPModel, number_format: str) -> None:
-    """Resultado de Gran M: estado, valores, holguras y notas (HU-06 / HU-10)."""
+def _render_simplex_result(
+    solution: Solution, model: LPModel, number_format: str, mode
+) -> None:
+    """
+    Resultado de Gran M (HU-15). Los dos modos terminan con la MISMA función
+    `_render_final_solution`, así la solución final es idéntica en ambos.
+    """
     _render_status_banner(solution)
+    if mode == MODE_STEP_BY_STEP and solution.steps:
+        _render_standard_form(solution.steps[0])
+        _render_iterations(solution, model, number_format)
+        st.subheader("Solución final")
+    _render_final_solution(solution, model, number_format)
+
+
+def _render_final_solution(solution: Solution, model: LPModel, number_format: str) -> None:
+    """Valor de cada variable, Z y holgura o exceso; o el porqué si no hay óptimo."""
     if solution.status == SolutionStatus.OPTIMA:
         _render_optimal_values(solution, number_format)
         _render_slacks(solution, model, number_format)
@@ -177,10 +235,35 @@ def _render_simplex_result(solution: Solution, model: LPModel, number_format: st
             st.write(solution.steps[-1].justification)
     for note in solution.notes:
         st.info(note, icon=":material/info:")
-    st.caption(
-        f"{len(solution.steps)} iteraciones calculadas. "
-        "La navegación y el tableau llegan con HU-08 y HU-09."
+
+
+def _render_standard_form(first_step: Step) -> None:
+    """Forma estándar: holguras, excesos, artificiales y preparación de la fila 0 (HU-06/15)."""
+    st.subheader("Forma estándar")
+    with st.container(border=True):
+        for note in first_step.setup_notes:
+            st.markdown(f"- {note}")
+
+
+def _render_iterations(solution: Solution, model: LPModel, number_format: str) -> None:
+    """Navegación (HU-08) y la iteración elegida: tableau resaltado y justificación (HU-09)."""
+    st.subheader("Iteraciones")
+    index = render_navigator(len(solution.steps))
+    step = solution.steps[index]
+
+    view = build_tableau_view(
+        step,
+        minimize=model.sense == OptimizationSense.MINIMIZE,
+        number_format=number_format,
     )
+    st.markdown(f"**{view.title}**")
+    st.html(render_tableau_html(view) + legend_html())
+    st.info(step.justification, icon=":material/lightbulb:")
+
+    # Notas propias de la iteración (degeneración, ciclado, óptimos múltiples...); la forma estándar ya se mostró arriba
+    for note in step.notes:
+        if note not in step.setup_notes:
+            st.warning(note, icon=":material/info:")
 
 def _render_status_banner(solution: Solution) -> None:
     if solution.status == SolutionStatus.OPTIMA:
@@ -190,8 +273,8 @@ def _render_status_banner(solution: Solution) -> None:
     else:
         st.warning(solution.message, icon=":material/warning:")
 
-# ---------- resultados
-# --------------------------------------------------------------- resultados
+# Resultados compartidos (Gráfico y Gran M)
+# =========================================
 
 # st.metric recorta el valor con "…" (white-space: nowrap + text-overflow:
 # ellipsis). Dentro de esta tarjeta se permite el salto de línea; tipografía,
@@ -240,17 +323,12 @@ def _render_optimal_values(solution: Solution, number_format: str) -> None:
 def _render_slacks(
     solution: Solution, model: LPModel, number_format: str
 ) -> None:
-    """Holguras y excesos del óptimo; compartido por Gráfico y Gran M."""
+    """Holgura o exceso de cada restricción en el óptimo; compartido por Gráfico y Gran M (HU-15)."""
     if solution.status != SolutionStatus.OPTIMA or not solution.slacks:
         return
-    kinds = {
-        Relation.LESS_EQUAL: "holgura",
-        Relation.GREAT_EQUAL: "exceso",
-        Relation.EQUAL: "igualdad",
-    }
-    with st.expander("Holguras y excesos en el óptimo"):
-        for constraint, slack in zip(model.constraints, solution.slacks):
-            st.markdown(
-                f"- **R{constraint.original_index}** ({kinds[constraint.relation]}): "
-                f"{format_number(slack, number_format)}"
-            )
+    st.markdown("**Holgura o exceso de cada restricción**")
+    st.dataframe(
+        build_slack_rows(model, solution, number_format),
+        hide_index=True,
+        width="stretch",
+    )

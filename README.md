@@ -85,7 +85,8 @@ python -m unittest tests.test_performance -v
 .
 ├── src/
 │   ├── application/         # Casos de uso, sin Streamlit
-│   │   └── use_cases/       # validate_model, solve_lp, invalidate_results
+│   │   ├── use_cases/       # validate_model, solve_lp, invalidate_results
+│   │   └── step_navigation.py # índice de iteración (HU-08) y qué resaltar (HU-09)
 │   ├── domain/              # Lógica pura, sin dependencias externas
 │   │   ├── model/           # LPModel, Constraint, enums
 │   │   ├── sensitivity/     # SensitivityAnalyzer (HU-11/12)
@@ -93,7 +94,8 @@ python -m unittest tests.test_performance -v
 │   │   │                    # ValorM, linalg, Step, Solution
 │   │   └── validation/      # parsing y validate_model_form
 │   ├── presentation/        # Única capa que conoce Streamlit
-│   │   ├── components/      # plot_view: figura y tabla de vértices
+│   │   ├── components/      # plot_view (gráfico), tableau_view (colores del tableau),
+│   │   │                    # navigation (botones + deslizador), solution_view
 │   │   ├── tabs/            # model_tab, solve_tab
 │   │   └── app.py
 │   └── utils/               # formatting, examples
@@ -117,7 +119,7 @@ python -m unittest tests.test_performance -v
 | --- | --- | --- |
 | Sprint 0 | Completado | Tipos de dominio, `ValorM`, `linalg`, esqueleto ejecutable, pruebas de rendimiento |
 | Sprint 1 | Completado | Modelo, validación, estado de sesión, método gráfico |
-| Sprint 2 | En progreso | Gran M y casos especiales (listos); navegación y tableau (HU-08/09); Revisado si hay tiempo |
+| Sprint 2 | En progreso | Gran M y casos especiales, navegación y tableau (HU-08/09) y modo Directa / Paso a paso (HU-15) listos; Revisado si hay tiempo |
 | Sprint 3 | Pendiente | Análisis de sensibilidad y exportación |
 
 ## Equipo/Autores

@@ -21,6 +21,21 @@ def F(n, d=None) -> Fraction:
     return Fraction(n) if d is None else Fraction(n, d)
 
 
+# Semilla fija: los datos "aleatorios" son siempre los mismos, así la prueba da el mismo resultado en cada corrida (local y en GitHub Actions)
+SEED = 2026
+
+
+def _nonzero_row(matrix, preferred: int, col: int, first_row: int) -> int:
+    """La fila preferida si su elemento en `col` no es 0; si no, la primera
+    fila (desde first_row) que sí lo tenga. Pivotear sobre un 0 es imposible"""
+    if matrix[preferred][col] != 0:
+        return preferred
+    for r in range(first_row, len(matrix)):
+        if matrix[r][col] != 0:
+            return r
+    return preferred   # columna sin ningún valor distinto de 0: pivot_matrix lo informa
+
+
 class TestPerformance(unittest.TestCase):
     """Pruebas de rendimiento con los límites máximos del documento."""
 
@@ -34,21 +49,22 @@ class TestPerformance(unittest.TestCase):
         cols = 42   # Z + 20 vars + 20 holguras/artificiales + RHS
         iterations = 200
 
-        # Construir tableau inicial con diagonal no nula
+        rng = random.Random(SEED)
         initial = [
-            [F(random.randint(1, 10)) for _ in range(cols)]
+            [F(rng.randint(1, 10)) for _ in range(cols)]
             for _ in range(rows)
         ]
         current_matrix = tuple(tuple(row) for row in initial)
 
         start = time.perf_counter()
         for i in range(iterations):
-            pivot_row = (i % (rows - 1)) + 1  # evita fila 0 (FO)
             pivot_col = (i % (cols - 1)) + 1
+            # evita la fila 0 (FO) y los pivotes en 0: tras varios pivoteos un elemento puede quedar exactamente en 0 (antes fallaba ~1 de cada 60 corridas)
+            pivot_row = _nonzero_row(current_matrix, (i % (rows - 1)) + 1, pivot_col, 1)
             current_matrix = pivot_matrix(current_matrix, pivot_row, pivot_col)
         elapsed = time.perf_counter() - start
 
-        print(f"\n⏱️ 200 pivoteos en tableau {rows}×{cols}: {elapsed:.4f}s")
+        print(f"\n200 pivoteos en tableau {rows}x{cols}: {elapsed:.4f}s")
         self.assertLess(elapsed, 10.0,
                         f"200 pivoteos en 21×42 tomó {elapsed:.4f}s (límite 10s)")
 
@@ -59,25 +75,21 @@ class TestPerformance(unittest.TestCase):
         n = 20
         iterations = 200
 
+        rng = random.Random(SEED)
         initial = [
-            [F(random.randint(1, 10)) for _ in range(n)]
+            [F(rng.randint(1, 10)) for _ in range(n)]
             for _ in range(n)
         ]
         current_matrix = tuple(tuple(row) for row in initial)
 
         start = time.perf_counter()
         for i in range(iterations):
-            pivot_row = i % n
             pivot_col = i % n
-            if current_matrix[pivot_row][pivot_col] == 0:
-                for r in range(n):
-                    if current_matrix[r][pivot_col] != 0:
-                        pivot_row = r
-                        break
+            pivot_row = _nonzero_row(current_matrix, i % n, pivot_col, 0)
             current_matrix = pivot_matrix(current_matrix, pivot_row, pivot_col)
         elapsed = time.perf_counter() - start
 
-        print(f"\n⏱️ 200 iteraciones Revisado en matriz {n}×{n}: {elapsed:.4f}s")
+        print(f"\n200 iteraciones Revisado en matriz {n}x{n}: {elapsed:.4f}s")
         self.assertLess(elapsed, 10.0,
                         f"Revisado 20×20 tomó {elapsed:.4f}s (límite 10s)")
 
@@ -88,12 +100,13 @@ class TestPerformance(unittest.TestCase):
         """
         n = 20
         # Matriz diagonalmente dominante → garantizamos que sea invertible
+        rng = random.Random(SEED)
         initial = [[F(0)] * n for _ in range(n)]
         for i in range(n):
-            initial[i][i] = F(random.randint(5, 20))
+            initial[i][i] = F(rng.randint(5, 20))
             for j in range(n):
                 if i != j:
-                    initial[i][j] = F(random.randint(0, 2))
+                    initial[i][j] = F(rng.randint(0, 2))
         matrix = tuple(tuple(row) for row in initial)
 
         start = time.perf_counter()
@@ -101,7 +114,7 @@ class TestPerformance(unittest.TestCase):
         product = matrix_multiply(matrix, inv)
         elapsed = time.perf_counter() - start
 
-        print(f"\n⏱️ Inversión + producto 20×20: {elapsed:.4f}s")
+        print(f"\nInversión + producto 20x20: {elapsed:.4f}s")
         self.assertEqual(product, identity_matrix(n))
         self.assertLess(elapsed, 5.0,
                         f"Inversión 20×20 tomó {elapsed:.4f}s (límite 5s)")
@@ -117,7 +130,7 @@ class TestPerformance(unittest.TestCase):
             _ = v1 < v2
         elapsed = time.perf_counter() - start
 
-        print(f"\n⏱️ 10,000 operaciones ValorM: {elapsed:.4f}s")
+        print(f"\n10,000 operaciones ValorM: {elapsed:.4f}s")
         self.assertLess(elapsed, 1.0,
                         f"ValorM overhead: {elapsed:.4f}s (límite 1s)")
 

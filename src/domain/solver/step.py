@@ -24,3 +24,7 @@ class Step:
     cost_basic: Optional[Tuple[Any, ...]] = None
     xb: Optional[Tuple[Fraction, ...]] = None
     multipliers: Optional[Tuple[Any, ...]] = None
+    # HU-09: columna que entra en este paso. Coincide con pivot.column cuando hay pivote; también se llena cuando la variable entra pero no hay pivote (no acotado, límite de iteraciones) para poder resaltar la columna. None si ninguna variable entra (tableau final)
+    entering_column: Optional[int] = None
+    # HU-15: notas de la forma estándar (solo en el paso 0). Son un subconjunto de `notes`; la UI las muestra en su propia sección y no las repite en la iteración
+    setup_notes: Tuple[str, ...] = ()

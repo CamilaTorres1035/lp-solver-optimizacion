@@ -7,6 +7,8 @@ Convención de Step (acorde para HU-08/09):
 - tableau[0] es la fila 0; columna 0 = Z; última columna = RHS
 - ratios[i] y basic_variables[i] corresponden a tableau[i + 1].
 - El pivote del paso k se aplica al tableau del paso k y produce el del paso k+1
+- entering_column = pivot.column si hay pivote; en el paso terminal de no acotado, límite o rayo no factible es la columna que intentó entrar; None en el tableau final
+- setup_notes (solo paso 0) = la forma estándar; también va incluida en notes
 """
 
 from fractions import Fraction
@@ -253,7 +255,8 @@ class BigMSimplexSolver:
             )
         self._seen.add(key)
 
-    def _build_step(self, pivot, ratios, justification, notes=()) -> None:
+    def _build_step(self, pivot, ratios, justification, notes=(), entering=None) -> None:
+        """`entering`: columna que entra cuando no hay pivote (no acotado, límite)."""
         m = self._model.n_constraints
         first = self._notes if not self._steps else ()
         all_notes = first + tuple(self._pending) + tuple(notes)
@@ -268,6 +271,8 @@ class BigMSimplexSolver:
             pivot=pivot,
             notes=all_notes,
             justification=justification,
+            entering_column=pivot.column if pivot is not None else entering,
+            setup_notes=first,
         ))
 
     def solve(self, model: LPModel) -> Solution:
@@ -277,11 +282,13 @@ class BigMSimplexSolver:
                 return self._finish()
             pivot, ratios, text, notes = self._find_pivot()
             if pivot is None:
+                entering = self._entering_column()[0]
                 row = self._positive_artificial()
                 if row is not None:   # rayo con artificial > 0: el modelo es no factible
                     return self._infeasible(row, ratios,
-                                            "La variable que entra puede crecer sin límite, pero ")
-                self._build_step(None, ratios, text)          # rama simple, solución no acotada
+                                            "La variable que entra puede crecer sin límite, pero ",
+                                            entering=entering)
+                self._build_step(None, ratios, text, entering=entering)   # no acotada
                 return self._solution(
                     SolutionStatus.NO_ACOTADA,
                     "La solución es no acotada: la función objetivo puede mejorar "
@@ -289,7 +296,8 @@ class BigMSimplexSolver:
                 )
             if len(self._steps) >= MAX_ITERATIONS:
                 self._build_step(None, ratios, (
-                    f"Se alcanzó el límite de {MAX_ITERATIONS} iteraciones."))
+                    f"Se alcanzó el límite de {MAX_ITERATIONS} iteraciones."),
+                    entering=pivot.column)
                 return self._solution(
                     SolutionStatus.LIMITE_ITERACIONES,
                     f"Se detuvo tras {MAX_ITERATIONS} iteraciones sin llegar al "
@@ -315,12 +323,12 @@ class BigMSimplexSolver:
                 return i
         return None
 
-    def _infeasible(self, row: int, ratios, prefix: str) -> Solution:
+    def _infeasible(self, row: int, ratios, prefix: str, entering=None) -> Solution:
         name = self._labels[self._basis[row - 1]]
         self._build_step(None, ratios, (
             f"{prefix}La artificial {name} sigue en la base con valor "
             f"{self._tableau[row][-1]} > 0: la suma de artificiales no se puede "
-            "reducir → no factible."))
+            "reducir → no factible."), entering=entering)
         return self._solution(
             SolutionStatus.NO_FACTIBLE,
             "El modelo no tiene solución factible: no se pudo eliminar la "
